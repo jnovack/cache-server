@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jnovack/flag"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
