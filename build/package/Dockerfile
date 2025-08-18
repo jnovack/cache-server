@@ -11,7 +11,7 @@ RUN go mod download
 COPY . .
 
 # Build the binary
-RUN go build -o cache-server ./cmd/cache-server
+RUN CGO_ENABLED=0 go build -v -o cache-server ./cmd/cache-server
 
 # Stage 2: Minimal runtime image
 FROM gcr.io/distroless/static:nonroot
