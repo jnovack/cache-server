@@ -33,4 +33,4 @@ EXPOSE 8080
 VOLUME ["/cache"]
 
 # Run the binary with the domain flag
-ENTRYPOINT ["/cache-server", "-domain", "${DOMAIN}"]
+ENTRYPOINT ["/cache-server"]
