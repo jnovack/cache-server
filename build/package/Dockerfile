@@ -23,8 +23,8 @@ ENV DOMAIN=example.com
 COPY --from=builder /app/cache-server /
 
 # Healthcheck on /healthz
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD [ "wget", "--spider", "-q", "http://localhost:8080/healthz" ]
+# HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+# CMD [ "wget", "--spider", "-q", "http://localhost:8080/healthz" ]
 
 # Expose port 8080
 EXPOSE 8080
