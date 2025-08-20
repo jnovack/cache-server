@@ -17,7 +17,7 @@ RUN CGO_ENABLED=0 go build -v -o cache-server ./cmd/cache-server
 FROM gcr.io/distroless/static:nonroot
 
 # Set environment variable (can be overridden at runtime)
-ENV DOMAIN=example.com
+ENV DOMAIN=contoso.local
 
 # Copy the binary
 COPY --from=builder /app/cache-server /
