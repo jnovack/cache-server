@@ -3,6 +3,7 @@ package ca
 import (
 	"crypto/x509"
 	"encoding/pem"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,5 +135,33 @@ func TestGetOrCreateLeafCaching(t *testing.T) {
 	// Parse certificate as extra sanity
 	if _, err := x509.ParseCertificate(block.Bytes); err != nil {
 		t.Fatalf("parse cert from cached pem failed: %v", err)
+	}
+}
+
+func TestLeafSANIncludesIP(t *testing.T) {
+	name, _ := ParseDN("CN=TestRoot")
+	root, err := GenerateRootCASelfSigned(name)
+	if err != nil {
+		t.Fatalf("GenerateRootCA error: %v", err)
+	}
+	root.CacheDir = t.TempDir()
+
+	cert, err := root.GetOrCreateLeaf("203.0.113.100")
+	if err != nil {
+		t.Fatalf("GetOrCreateLeaf failed: %v", err)
+	}
+	// Parse cert to x509
+	x, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+	found := false
+	for _, ip := range x.IPAddresses {
+		if ip.Equal(net.ParseIP("203.0.113.100")) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected SAN IP 203.0.113.100")
 	}
 }

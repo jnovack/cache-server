@@ -12,221 +12,109 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jnovack/cache-server/pkg/ca"
 	"github.com/jnovack/cache-server/pkg/cacheproxy"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestSocksCaptureRecordsHTTP(t *testing.T) {
-	td := t.TempDir()
-
-	// origin HTTP
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, "hello")
-	}))
-	defer origin.Close()
-	hostPort := strings.TrimPrefix(origin.URL, "http://")
-
-	// root CA for MITM path (not used here but required by config)
-	name, err := ca.ParseDN("CN=mitm-root")
-	if err != nil {
-		t.Fatalf("ParseDN: %v", err)
-	}
-	root, err := ca.GenerateRootCASelfSigned(name)
-	if err != nil {
-		t.Fatalf("GenerateRootCA: %v", err)
-	}
-	root.CacheDir = td
-
-	// cacheproxy config - use origin client for TLS cases if needed
-	cfg := cacheproxy.Config{
-		CacheDir:   td,
-		Private:    false,
-		HTTPClient: origin.Client(),
-	}
-
-	s := &Server{
-		Addr:     "127.0.0.1:0",
-		CacheCfg: cfg,
-		RootCA:   root,
-	}
-	if err := s.Start(); err != nil {
-		t.Fatalf("start socks: %v", err)
-	}
-	defer s.Close()
-
-	addr := s.ln.Addr().String()
-
-	// connect and perform SOCKS handshake + CONNECT to hostPort
-	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		t.Fatalf("dial socks: %v", err)
-	}
-	br := bufio.NewReader(conn)
-	bw := bufio.NewWriter(conn)
-	// greet
-	_, _ = bw.Write([]byte{0x05, 0x01, 0x00})
-	if err := bw.Flush(); err != nil {
-		t.Fatalf("flush greeting: %v", err)
-	}
-	// read method selection
-	ver, _ := br.ReadByte()
-	meth, _ := br.ReadByte()
-	if ver != 0x05 || meth != 0x00 {
-		t.Fatalf("unexpected greeting reply")
-	}
-
-	// send CONNECT to domain (atyp=3)
-	parts := strings.Split(hostPort, ":")
-	port, _ := strconv.Atoi(parts[1])
-	_, _ = bw.Write([]byte{0x05, 0x01, 0x00, 0x03, byte(len(parts[0]))})
-	_, _ = bw.Write([]byte(parts[0]))
-	_, _ = bw.Write([]byte{byte(port >> 8), byte(port)})
-	if err := bw.Flush(); err != nil {
-		t.Fatalf("flush connect: %v", err)
-	}
-	// read reply
-	reply := make([]byte, 10)
-	if _, err := io.ReadFull(br, reply); err != nil {
-		t.Fatalf("read connect reply: %v", err)
-	}
-	if reply[1] != 0x00 {
-		t.Fatalf("connect failed: %d", reply[1])
-	}
-
-	// now send an HTTP request over the established connection
-	_, _ = bw.WriteString("GET /g HTTP/1.1\r\nHost: " + hostPort + "\r\nConnection: close\r\n\r\n")
-	if err := bw.Flush(); err != nil {
-		t.Fatalf("flush http request: %v", err)
-	}
-	// read response
-	resp, err := http.ReadResponse(br, nil)
-	if err != nil {
-		t.Fatalf("read response: %v", err)
-	}
-	_, _ = io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-
-	// allow observer goroutine to run
-	time.Sleep(100 * time.Millisecond)
-	entries := s.Capture.List()
-	if len(entries) == 0 {
-		t.Fatalf("expected captures, got none")
-	}
-	found := false
-	for _, e := range entries {
-		if strings.Contains(e.Path, "/g") || strings.Contains(e.URL, "/g") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected capture entry for /g, entries: %+v", entries)
-	}
-}
-
-// --- helper: minimal SOCKS5 client for tests ---
+// socks5Connect is a small helper that performs a minimal SOCKS5 no-auth
+// handshake and CONNECT to the requested host:port. If useDomain is true,
+// it sends ATYP=DOMAIN; otherwise it sends ATYP=IPv4 with the provided host.
 func socks5Connect(t *testing.T, proxyAddr, host string, port uint16, useDomain bool) net.Conn {
 	t.Helper()
 
 	c, err := net.Dial("tcp", proxyAddr)
-	if err != nil {
-		t.Fatalf("dial proxy: %v", err)
-	}
+	require.NoError(t, err, "dial proxy")
 
 	br := bufio.NewReader(c)
 	bw := bufio.NewWriter(c)
 
-	// greeting
-	_, _ = bw.Write([]byte{0x05, 0x01, 0x00}) // ver=5, nmethods=1, no-auth
-	if err := bw.Flush(); err != nil {
-		t.Fatalf("flush greeting: %v", err)
-	}
-	// method selection
-	if v, _ := br.ReadByte(); v != 0x05 {
-		t.Fatalf("ver: got %x", v)
-	}
-	if m, _ := br.ReadByte(); m != 0x00 {
-		t.Fatalf("method: got %x", m)
-	}
+	// Greeting: VER=5, NMETHODS=1, METHOD=0 (no auth)
+	_, _ = bw.Write([]byte{0x05, 0x01, 0x00})
+	require.NoError(t, bw.Flush(), "flush greeting")
 
-	// request
-	_, _ = bw.Write([]byte{0x05, 0x01, 0x00}) // ver=5, cmd=CONNECT, rsv=0
+	// Method selection reply
+	ver, err := br.ReadByte()
+	require.NoError(t, err, "read ver")
+	require.Equal(t, byte(0x05), ver, "socksv")
+
+	meth, err := br.ReadByte()
+	require.NoError(t, err, "read method")
+	require.Equal(t, byte(0x00), meth, "no-auth method")
+
+	// CONNECT request header
+	_, _ = bw.Write([]byte{0x05, 0x01, 0x00}) // VER=5, CMD=CONNECT, RSV=0
+
+	// Address
 	if useDomain {
 		hb := []byte(host)
-		_, _ = bw.Write([]byte{0x03, byte(len(hb))})
+		_, _ = bw.Write([]byte{0x03, byte(len(hb))}) // ATYP=DOMAIN, length
 		_, _ = bw.Write(hb)
 	} else {
 		ip := net.ParseIP(host).To4()
-		if ip == nil {
-			t.Fatalf("expected ipv4 for useDomain=false, got %q", host)
-		}
-		_, _ = bw.Write([]byte{0x01})
+		require.NotNil(t, ip, "expected ipv4 address when useDomain=false")
+		_, _ = bw.Write([]byte{0x01}) // ATYP=IPv4
 		_, _ = bw.Write(ip)
 	}
-	_ = binary.Write(bw, binary.BigEndian, port)
-	if err := bw.Flush(); err != nil {
-		t.Fatalf("flush connect: %v", err)
-	}
 
-	// reply
-	resp := make([]byte, 10)
-	if _, err := io.ReadFull(br, resp); err != nil {
-		t.Fatalf("read reply: %v", err)
-	}
-	if resp[1] != 0x00 {
-		t.Fatalf("connect failed, rep=%x", resp[1])
-	}
+	// Port
+	require.NoError(t, binary.Write(bw, binary.BigEndian, port), "write port")
+	require.NoError(t, bw.Flush(), "flush connect")
+
+	// Reply: VER, REP, RSV, ATYP, BND.ADDR..., BND.PORT...
+	reply := make([]byte, 10)
+	_, err = io.ReadFull(br, reply)
+	require.NoError(t, err, "read connect reply")
+	require.Equal(t, byte(0x00), reply[1], "rep success")
+
 	return c
 }
 
 func TestSOCKS_DomainATYP_HTTPFlow(t *testing.T) {
-	// Start origin HTTP server
+	// Origin HTTP server.
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "ok-domain")
 	}))
 	defer origin.Close()
 
-	// Extract host/port for "localhost"
 	originURL := strings.TrimPrefix(origin.URL, "http://")
 	parts := strings.Split(originURL, ":")
-	if len(parts) != 2 {
-		t.Fatalf("unexpected origin URL: %s", originURL)
-	}
+	require.Len(t, parts, 2, "unexpected origin url")
+
 	host := "localhost"
 	portNum, _ := strconv.Atoi(parts[1])
 
-	// Start SOCKS server on :0
+	// Start SOCKS server.
 	s := &Server{
 		Addr: "127.0.0.1:0",
 		CacheCfg: cacheproxy.Config{
 			CacheDir: t.TempDir(),
 		},
 	}
-	if err := s.Start(); err != nil {
-		t.Fatalf("start socks: %v", err)
-	}
+	require.NoError(t, s.Start(), "start socks")
 	defer s.Close()
-	proxyAddr := s.ln.Addr().String()
 
-	// Connect via SOCKS using DOMAIN atyp (localhost)
-	conn := socks5Connect(t, proxyAddr, host, uint16(portNum), true)
+	// Connect via SOCKS using DOMAIN atyp (localhost).
+	conn := socks5Connect(t, s.ln.Addr().String(), host, uint16(portNum), true)
 	defer conn.Close()
 
-	// Now speak HTTP on that tunnel
+	// Speak HTTP over the established tunnel.
 	req := "GET / HTTP/1.1\r\nHost: " + originURL + "\r\nConnection: close\r\n\r\n"
-	if _, err := io.WriteString(conn, req); err != nil {
-		t.Fatalf("write http: %v", err)
-	}
+	_, err := io.WriteString(conn, req)
+	require.NoError(t, err, "write http request")
+
 	br := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(br, nil)
-	if err != nil {
-		t.Fatalf("read resp: %v", err)
-	}
+	require.NoError(t, err, "read response")
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
-	if string(b) != "ok-domain" {
-		t.Fatalf("unexpected body: %q", string(b))
-	}
+
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "ok-domain", string(body), "unexpected body")
+
+	// Ensure capture store recorded something.
+	time.Sleep(100 * time.Millisecond)
+	entries := s.Capture.List()
+	require.NotEmpty(t, entries, "expected at least one captured entry")
 }
 
 func TestSOCKS_IPv4ATYP_HTTPFlow(t *testing.T) {
@@ -237,9 +125,8 @@ func TestSOCKS_IPv4ATYP_HTTPFlow(t *testing.T) {
 
 	originURL := strings.TrimPrefix(origin.URL, "http://")
 	parts := strings.Split(originURL, ":")
-	if len(parts) != 2 {
-		t.Fatalf("unexpected origin URL: %s", originURL)
-	}
+	require.Len(t, parts, 2, "unexpected origin url")
+
 	ip := "127.0.0.1"
 	portNum, _ := strconv.Atoi(parts[1])
 
@@ -249,27 +136,86 @@ func TestSOCKS_IPv4ATYP_HTTPFlow(t *testing.T) {
 			CacheDir: t.TempDir(),
 		},
 	}
-	if err := s.Start(); err != nil {
-		t.Fatalf("start socks: %v", err)
-	}
+	require.NoError(t, s.Start(), "start socks")
 	defer s.Close()
-	proxyAddr := s.ln.Addr().String()
 
-	conn := socks5Connect(t, proxyAddr, ip, uint16(portNum), false)
+	conn := socks5Connect(t, s.ln.Addr().String(), ip, uint16(portNum), false)
 	defer conn.Close()
 
 	req := "GET / HTTP/1.1\r\nHost: " + originURL + "\r\nConnection: close\r\n\r\n"
-	if _, err := io.WriteString(conn, req); err != nil {
-		t.Fatalf("write http: %v", err)
-	}
+	_, err := io.WriteString(conn, req)
+	require.NoError(t, err, "write http request")
+
 	br := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(br, nil)
-	if err != nil {
-		t.Fatalf("read resp: %v", err)
-	}
+	require.NoError(t, err, "read resp")
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
-	if string(b) != "ok-ip" {
-		t.Fatalf("unexpected body: %q", string(b))
+
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "ok-ip", string(body), "unexpected body")
+
+	time.Sleep(100 * time.Millisecond)
+	entries := s.Capture.List()
+	require.NotEmpty(t, entries, "expected captured entries")
+}
+
+func TestAttachCaptureStore_ChainsAndCaptures(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "capture-me")
+	}))
+	defer origin.Close()
+
+	originURL := strings.TrimPrefix(origin.URL, "http://")
+	parts := strings.Split(originURL, ":")
+	require.Len(t, parts, 2, "unexpected origin url")
+
+	host := "localhost"
+	portNum, _ := strconv.Atoi(parts[1])
+
+	// Prepare an external capture store and attach it.
+	external := NewCaptureStore(32)
+
+	s := &Server{
+		Addr: "127.0.0.1:0",
+		CacheCfg: cacheproxy.Config{
+			CacheDir: t.TempDir(),
+		},
 	}
+	// Attach before Start() to verify chaining still works when Start sets up its own capture.
+	s.AttachCaptureStore(external)
+
+	require.NoError(t, s.Start(), "start socks")
+	defer s.Close()
+
+	conn := socks5Connect(t, s.ln.Addr().String(), host, uint16(portNum), true)
+	defer conn.Close()
+
+	req := "GET /x HTTP/1.1\r\nHost: " + originURL + "\r\nConnection: close\r\n\r\n"
+	_, err := io.WriteString(conn, req)
+	require.NoError(t, err, "write http request")
+
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	require.NoError(t, err, "read resp")
+	_ = resp.Body.Close()
+
+	// Allow observer to run.
+	time.Sleep(150 * time.Millisecond)
+
+	// Both internal and external capture stores should have entries.
+	internal := s.Capture.List()
+	ext := external.List()
+
+	require.NotEmpty(t, internal, "internal capture store empty")
+	require.NotEmpty(t, ext, "external capture store empty")
+
+	// Spot-check path presence in external store.
+	found := false
+	for _, r := range ext {
+		if strings.Contains(r.Path, "/x") || strings.Contains(r.URL, "/x") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected to find /x in external captures")
 }
