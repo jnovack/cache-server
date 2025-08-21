@@ -2,6 +2,7 @@ package socks
 
 import (
 	"bufio"
+	"encoding/binary"
 	"io"
 	"net"
 	"net/http"
@@ -120,5 +121,155 @@ func TestSocksCaptureRecordsHTTP(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected capture entry for /g, entries: %+v", entries)
+	}
+}
+
+// --- helper: minimal SOCKS5 client for tests ---
+func socks5Connect(t *testing.T, proxyAddr, host string, port uint16, useDomain bool) net.Conn {
+	t.Helper()
+
+	c, err := net.Dial("tcp", proxyAddr)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+
+	br := bufio.NewReader(c)
+	bw := bufio.NewWriter(c)
+
+	// greeting
+	_, _ = bw.Write([]byte{0x05, 0x01, 0x00}) // ver=5, nmethods=1, no-auth
+	if err := bw.Flush(); err != nil {
+		t.Fatalf("flush greeting: %v", err)
+	}
+	// method selection
+	if v, _ := br.ReadByte(); v != 0x05 {
+		t.Fatalf("ver: got %x", v)
+	}
+	if m, _ := br.ReadByte(); m != 0x00 {
+		t.Fatalf("method: got %x", m)
+	}
+
+	// request
+	_, _ = bw.Write([]byte{0x05, 0x01, 0x00}) // ver=5, cmd=CONNECT, rsv=0
+	if useDomain {
+		hb := []byte(host)
+		_, _ = bw.Write([]byte{0x03, byte(len(hb))})
+		_, _ = bw.Write(hb)
+	} else {
+		ip := net.ParseIP(host).To4()
+		if ip == nil {
+			t.Fatalf("expected ipv4 for useDomain=false, got %q", host)
+		}
+		_, _ = bw.Write([]byte{0x01})
+		_, _ = bw.Write(ip)
+	}
+	_ = binary.Write(bw, binary.BigEndian, port)
+	if err := bw.Flush(); err != nil {
+		t.Fatalf("flush connect: %v", err)
+	}
+
+	// reply
+	resp := make([]byte, 10)
+	if _, err := io.ReadFull(br, resp); err != nil {
+		t.Fatalf("read reply: %v", err)
+	}
+	if resp[1] != 0x00 {
+		t.Fatalf("connect failed, rep=%x", resp[1])
+	}
+	return c
+}
+
+func TestSOCKS_DomainATYP_HTTPFlow(t *testing.T) {
+	// Start origin HTTP server
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "ok-domain")
+	}))
+	defer origin.Close()
+
+	// Extract host/port for "localhost"
+	originURL := strings.TrimPrefix(origin.URL, "http://")
+	parts := strings.Split(originURL, ":")
+	if len(parts) != 2 {
+		t.Fatalf("unexpected origin URL: %s", originURL)
+	}
+	host := "localhost"
+	portNum, _ := strconv.Atoi(parts[1])
+
+	// Start SOCKS server on :0
+	s := &Server{
+		Addr: "127.0.0.1:0",
+		CacheCfg: cacheproxy.Config{
+			CacheDir: t.TempDir(),
+		},
+	}
+	if err := s.Start(); err != nil {
+		t.Fatalf("start socks: %v", err)
+	}
+	defer s.Close()
+	proxyAddr := s.ln.Addr().String()
+
+	// Connect via SOCKS using DOMAIN atyp (localhost)
+	conn := socks5Connect(t, proxyAddr, host, uint16(portNum), true)
+	defer conn.Close()
+
+	// Now speak HTTP on that tunnel
+	req := "GET / HTTP/1.1\r\nHost: " + originURL + "\r\nConnection: close\r\n\r\n"
+	if _, err := io.WriteString(conn, req); err != nil {
+		t.Fatalf("write http: %v", err)
+	}
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read resp: %v", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if string(b) != "ok-domain" {
+		t.Fatalf("unexpected body: %q", string(b))
+	}
+}
+
+func TestSOCKS_IPv4ATYP_HTTPFlow(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "ok-ip")
+	}))
+	defer origin.Close()
+
+	originURL := strings.TrimPrefix(origin.URL, "http://")
+	parts := strings.Split(originURL, ":")
+	if len(parts) != 2 {
+		t.Fatalf("unexpected origin URL: %s", originURL)
+	}
+	ip := "127.0.0.1"
+	portNum, _ := strconv.Atoi(parts[1])
+
+	s := &Server{
+		Addr: "127.0.0.1:0",
+		CacheCfg: cacheproxy.Config{
+			CacheDir: t.TempDir(),
+		},
+	}
+	if err := s.Start(); err != nil {
+		t.Fatalf("start socks: %v", err)
+	}
+	defer s.Close()
+	proxyAddr := s.ln.Addr().String()
+
+	conn := socks5Connect(t, proxyAddr, ip, uint16(portNum), false)
+	defer conn.Close()
+
+	req := "GET / HTTP/1.1\r\nHost: " + originURL + "\r\nConnection: close\r\n\r\n"
+	if _, err := io.WriteString(conn, req); err != nil {
+		t.Fatalf("write http: %v", err)
+	}
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read resp: %v", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if string(b) != "ok-ip" {
+		t.Fatalf("unexpected body: %q", string(b))
 	}
 }

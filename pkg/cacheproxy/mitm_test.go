@@ -188,3 +188,335 @@ func TestMITM_SelectsCertBySNI(t *testing.T) {
 		t.Fatalf("presented certificate does not include SNI name; CN=%q DNSNames=%v", leaf.Subject.CommonName, leaf.DNSNames)
 	}
 }
+
+func TestMITM_BypassOnAuthorizationWhenPrivateFalse(t *testing.T) {
+	td := t.TempDir()
+
+	// Origin server with cacheable headers (to prove we still BYPASS due to Authorization)
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"auth-v1"`)
+		w.Header().Set("Cache-Control", "max-age=60")
+		_, _ = io.WriteString(w, "secret")
+	}))
+	defer origin.Close()
+
+	name, _ := ca.ParseDN("CN=mitm-root")
+	root, _ := ca.GenerateRootCASelfSigned(name)
+	root.CacheDir = td
+
+	cfg := Config{
+		CacheDir:   td,
+		Private:    false, // <- critical: Authorization should force BYPASS
+		Metrics:    admin.NewMetrics(),
+		RootCA:     root,
+		HTTPClient: origin.Client(),
+	}
+
+	hostPort := strings.TrimPrefix(origin.URL, "https://")
+
+	runOnce := func() (status int, xcache string, body string) {
+		srv, cli := net.Pipe()
+		go HandleMITMHTTPS(srv, strings.Split(hostPort, ":")[0], cfg)
+
+		tlsCli := tls.Client(cli, &tls.Config{InsecureSkipVerify: true})
+		if err := tlsCli.Handshake(); err != nil {
+			t.Fatalf("handshake: %v", err)
+		}
+		req := "GET /topsecret HTTP/1.1\r\nHost: " + hostPort + "\r\nAuthorization: Bearer abc\r\nConnection: close\r\n\r\n"
+		if _, err := io.WriteString(tlsCli, req); err != nil {
+			t.Fatalf("write req: %v", err)
+		}
+		br := bufio.NewReader(tlsCli)
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil {
+			t.Fatalf("read resp: %v", err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, resp.Header.Get("X-Cache"), string(b)
+	}
+
+	status, xcache, body := runOnce()
+	if status != 200 {
+		t.Fatalf("expected 200, got %d", status)
+	}
+	if xcache != "BYPASS" {
+		t.Fatalf("expected X-Cache=BYPASS, got %q", xcache)
+	}
+	if body != "secret" {
+		t.Fatalf("unexpected body: %q", body)
+	}
+}
+
+func TestMITM_NoStoreAndNoCacheCauseBypass(t *testing.T) {
+	td := t.TempDir()
+
+	// Origin returns no-store and then no-cache on two different paths
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/nostore":
+			w.Header().Set("Cache-Control", "no-store")
+			_, _ = io.WriteString(w, "nostore-body")
+		case "/nocache":
+			w.Header().Set("Cache-Control", "no-cache")
+			_, _ = io.WriteString(w, "nocache-body")
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer origin.Close()
+
+	name, _ := ca.ParseDN("CN=mitm-root")
+	root, _ := ca.GenerateRootCASelfSigned(name)
+	root.CacheDir = td
+
+	cfg := Config{
+		CacheDir:   td,
+		Private:    false,
+		Metrics:    admin.NewMetrics(),
+		RootCA:     root,
+		HTTPClient: origin.Client(),
+	}
+
+	host := strings.TrimPrefix(origin.URL, "https://")
+	doReq := func(path string) (xcache string) {
+		srv, cli := net.Pipe()
+		go HandleMITMHTTPS(srv, strings.Split(host, ":")[0], cfg)
+		tlsCli := tls.Client(cli, &tls.Config{InsecureSkipVerify: true})
+		if err := tlsCli.Handshake(); err != nil {
+			t.Fatalf("handshake: %v", err)
+		}
+		req := "GET " + path + " HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n"
+		if _, err := io.WriteString(tlsCli, req); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		br := bufio.NewReader(tlsCli)
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		defer resp.Body.Close()
+		_, _ = io.ReadAll(resp.Body)
+		return resp.Header.Get("X-Cache")
+	}
+
+	if xc := doReq("/nostore"); xc != "BYPASS" {
+		t.Fatalf("no-store should BYPASS, got %q", xc)
+	}
+	if xc := doReq("/nocache"); xc != "BYPASS" {
+		t.Fatalf("no-cache should BYPASS, got %q", xc)
+	}
+}
+
+func TestMITM_HEAD_IsCacheableAndHasNoBody(t *testing.T) {
+	td := t.TempDir()
+
+	etag := `"head-v1"`
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", etag)
+		w.Header().Set("Cache-Control", "max-age=30")
+		if r.Method == http.MethodHead {
+			return
+		}
+		_, _ = io.WriteString(w, "payload")
+	}))
+	defer origin.Close()
+
+	name, _ := ca.ParseDN("CN=mitm-root")
+	root, _ := ca.GenerateRootCASelfSigned(name)
+	root.CacheDir = td
+
+	cfg := Config{
+		CacheDir:   td,
+		Private:    false,
+		Metrics:    admin.NewMetrics(),
+		RootCA:     root,
+		HTTPClient: origin.Client(),
+	}
+	host := strings.TrimPrefix(origin.URL, "https://")
+
+	// HEAD request
+	func() {
+		srv, cli := net.Pipe()
+		go HandleMITMHTTPS(srv, strings.Split(host, ":")[0], cfg)
+		tlsCli := tls.Client(cli, &tls.Config{InsecureSkipVerify: true})
+		if err := tlsCli.Handshake(); err != nil {
+			t.Fatalf("handshake: %v", err)
+		}
+		req := "HEAD /resource HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n"
+		if _, err := io.WriteString(tlsCli, req); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		br := bufio.NewReader(tlsCli)
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		if len(b) != 0 {
+			t.Fatalf("HEAD should have no body, got %d bytes", len(b))
+		}
+		if got := resp.Header.Get("X-Cache"); got != "MISS" && got != "REVALIDATED" {
+			t.Fatalf("unexpected X-Cache for HEAD: %q", got)
+		}
+	}()
+
+	// Follow-up GET should be HIT or REVALIDATED
+	func() {
+		srv, cli := net.Pipe()
+		go HandleMITMHTTPS(srv, strings.Split(host, ":")[0], cfg)
+		tlsCli := tls.Client(cli, &tls.Config{InsecureSkipVerify: true})
+		if err := tlsCli.Handshake(); err != nil {
+			t.Fatalf("handshake2: %v", err)
+		}
+		req := "GET /resource HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n"
+		if _, err := io.WriteString(tlsCli, req); err != nil {
+			t.Fatalf("write2: %v", err)
+		}
+		br := bufio.NewReader(tlsCli)
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil {
+			t.Fatalf("read2: %v", err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		if string(b) != "payload" {
+			t.Fatalf("unexpected GET body: %q", string(b))
+		}
+		if got := resp.Header.Get("X-Cache"); got != "HIT" && got != "REVALIDATED" {
+			t.Fatalf("expected HIT/REVALIDATED on follow-up GET, got %q", got)
+		}
+	}()
+}
+
+func TestMITM_LastModified_Revalidation(t *testing.T) {
+	td := t.TempDir()
+	lastMod := time.Now().Add(-2 * time.Hour).UTC().Format(http.TimeFormat)
+
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// If If-Modified-Since is present, return 304
+		if ims := r.Header.Get("If-Modified-Since"); ims != "" {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("Last-Modified", lastMod)
+		w.Header().Set("Cache-Control", "max-age=1")
+		_, _ = io.WriteString(w, "lm-v1")
+	}))
+	defer origin.Close()
+
+	name, _ := ca.ParseDN("CN=mitm-root")
+	root, _ := ca.GenerateRootCASelfSigned(name)
+	root.CacheDir = td
+
+	cfg := Config{
+		CacheDir:   td,
+		Private:    false,
+		Metrics:    admin.NewMetrics(),
+		RootCA:     root,
+		HTTPClient: origin.Client(),
+	}
+	host := strings.TrimPrefix(origin.URL, "https://")
+
+	run := func() string {
+		srv, cli := net.Pipe()
+		go HandleMITMHTTPS(srv, strings.Split(host, ":")[0], cfg)
+		tlsCli := tls.Client(cli, &tls.Config{InsecureSkipVerify: true})
+		if err := tlsCli.Handshake(); err != nil {
+			t.Fatalf("handshake: %v", err)
+		}
+		req := "GET /lm HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n"
+		if _, err := io.WriteString(tlsCli, req); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		br := bufio.NewReader(tlsCli)
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		defer resp.Body.Close()
+		_, _ = io.ReadAll(resp.Body)
+		return resp.Header.Get("X-Cache")
+	}
+
+	xc1 := run()
+	if xc1 != "MISS" && xc1 != "REVALIDATED" {
+		t.Fatalf("first request expected MISS/REVALIDATED, got %q", xc1)
+	}
+	time.Sleep(1100 * time.Millisecond) // exceed max-age to trigger conditional
+	xc2 := run()
+	if xc2 != "REVALIDATED" && xc2 != "HIT" {
+		t.Fatalf("expected REVALIDATED/HIT on second request, got %q", xc2)
+	}
+}
+
+func TestMITM_ServeStaleOnOriginError(t *testing.T) {
+	td := t.TempDir()
+
+	// First handler serves cacheable content; then we flip to 500 to simulate origin outage.
+	var okMode = true
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if okMode {
+			w.Header().Set("ETag", `"v1"`)
+			w.Header().Set("Cache-Control", "max-age=0") // force revalidate next time
+			_, _ = io.WriteString(w, "prime")
+			okMode = false
+			return
+		}
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer origin.Close()
+
+	name, _ := ca.ParseDN("CN=mitm-root")
+	root, _ := ca.GenerateRootCASelfSigned(name)
+	root.CacheDir = td
+
+	cfg := Config{
+		CacheDir:   td,
+		Private:    false,
+		Metrics:    admin.NewMetrics(),
+		RootCA:     root,
+		HTTPClient: origin.Client(),
+	}
+	host := strings.TrimPrefix(origin.URL, "https://")
+
+	do := func() (string, string) {
+		srv, cli := net.Pipe()
+		go HandleMITMHTTPS(srv, strings.Split(host, ":")[0], cfg)
+		tlsCli := tls.Client(cli, &tls.Config{InsecureSkipVerify: true})
+		if err := tlsCli.Handshake(); err != nil {
+			t.Fatalf("handshake: %v", err)
+		}
+		req := "GET /outage HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n"
+		if _, err := io.WriteString(tlsCli, req); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		br := bufio.NewReader(tlsCli)
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.Header.Get("X-Cache"), string(b)
+	}
+
+	// Populate cache
+	xc1, body1 := do()
+	if xc1 != "MISS" && xc1 != "REVALIDATED" {
+		t.Fatalf("first request expected MISS/REVALIDATED, got %q", xc1)
+	}
+	if body1 != "prime" {
+		t.Fatalf("unexpected body1: %q", body1)
+	}
+
+	// Now origin fails, we should serve STALE from cache
+	xc2, body2 := do()
+	if xc2 != "STALE" {
+		t.Fatalf("expected STALE on origin error, got %q", xc2)
+	}
+	if body2 != "prime" {
+		t.Fatalf("expected stale body, got %q", body2)
+	}
+}
