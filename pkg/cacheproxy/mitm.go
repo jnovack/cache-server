@@ -1,4 +1,3 @@
-// pkg/cacheproxy/mitm.go
 package cacheproxy
 
 import (
@@ -19,8 +18,9 @@ import (
 	cachepkg "github.com/jnovack/cache-server/pkg/cache"
 )
 
-// HandleMITMHTTPS terminates TLS using a leaf cert from cfg.RootCA, reads one HTTP
-// request from the client, applies caching rules and proxies to origin over HTTPS.
+// HandleMITMHTTPS terminates TLS using a leaf cert obtained via cfg.RootCA.
+// Certificate selection prefers the ClientHello SNI; if SNI is not present we
+// fall back to the provided host parameter.
 func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 	start := time.Now()
 	defer func() { _ = conn.Close() }()
@@ -35,18 +35,28 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 		return
 	}
 
-	leaf, err := cfg.RootCA.GetOrCreateLeaf(host)
-	if err != nil {
-		log.Error().Err(err).Str("host", host).Msg("failed to obtain leaf certificate")
-		fmt.Fprintf(conn, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 26\r\nConnection: close\r\n\r\nCannot provision leaf cert")
-		return
+	// Use GetCertificate so we can inspect the ClientHello (SNI) and generate
+	// a leaf certificate that matches the requested server name.
+	tlsCfg := &tls.Config{
+		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			serverName := chi.ServerName
+			if serverName == "" {
+				// fallback to the host passed by the caller (may be an IP)
+				serverName = host
+			}
+			cert, err := cfg.RootCA.GetOrCreateLeaf(serverName)
+			if err != nil {
+				log.Error().Err(err).Str("server_name", serverName).Msg("failed to GetOrCreateLeaf")
+				return nil, err
+			}
+			return &cert, nil
+		},
+		NextProtos: []string{"http/1.1"},
 	}
 
-	tlsSrv := tls.Server(conn, &tls.Config{
-		Certificates: []tls.Certificate{leaf},
-		NextProtos:   []string{"http/1.1"},
-	})
+	tlsSrv := tls.Server(conn, tlsCfg)
 	if err := tlsSrv.Handshake(); err != nil {
+		// handshake may fail if the client does not speak TLS or disconnects
 		log.Debug().Err(err).Str("host", host).Msg("TLS handshake with client failed")
 		return
 	}
@@ -55,12 +65,13 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 	req, err := http.ReadRequest(br)
 	if err != nil {
 		log.Debug().Err(err).Msg("failed to read HTTPS request from client")
+		// reply directly over the TLS connection
 		fmt.Fprintf(tlsSrv, "HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBad Request")
 		return
 	}
 	defer req.Body.Close()
 
-	// Only GET and HEAD are cacheable; other methods are rejected in this MITM path.
+	// Only GET and HEAD are cacheable in MITM path.
 	if req.Method != http.MethodGet && req.Method != http.MethodHead {
 		log.Debug().Str("method", req.Method).Msg("non-cacheable HTTPS method, denied in MITM mode")
 		fmt.Fprintf(tlsSrv, "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 18\r\nConnection: close\r\n\r\nMethod Not Allowed")
@@ -85,7 +96,7 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 	meta := cachepkg.ReadMeta(metaFile)
 	fi, _ := os.Stat(cacheFile)
 
-	// Serve fresh cache if present and still fresh
+	// Serve fresh cache if present and fresh
 	if fi != nil && !meta.NoCache && cachepkg.IsFresh(meta) {
 		sendCachedOnConn(tlsSrv, http.StatusOK, meta, "HIT", req.Method == http.MethodHead, cacheFile, fi)
 		if cfg.Metrics != nil {
@@ -131,8 +142,13 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 				Outcome:     "STALE",
 				IsTLS:       true,
 				LatencySecs: time.Since(start).Seconds(),
-				Size:        fi.Size(),
-				Status:      http.StatusOK,
+				Size: func() int64 {
+					if fi != nil {
+						return fi.Size()
+					}
+					return 0
+				}(),
+				Status: http.StatusOK,
 			})
 			log.Info().Str("url", rawURL).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale (https mitm)")
 			return
@@ -177,7 +193,12 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 				Outcome:     "REVALIDATED",
 				IsTLS:       true,
 				LatencySecs: time.Since(start).Seconds(),
-				Size:        fi.Size(),
+				Size: func() int64 {
+					if fi != nil {
+						return fi.Size()
+					}
+					return 0
+				}(),
 				Status:      http.StatusOK,
 				Conditional: true,
 			})
@@ -286,8 +307,13 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 				Outcome:     "STALE",
 				IsTLS:       true,
 				LatencySecs: time.Since(start).Seconds(),
-				Size:        fi.Size(),
-				Status:      http.StatusOK,
+				Size: func() int64 {
+					if fi != nil {
+						return fi.Size()
+					}
+					return 0
+				}(),
+				Status: http.StatusOK,
 			})
 			log.Info().Str("url", rawURL).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale (https mitm non-200)")
 			return
@@ -300,8 +326,10 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 			}
 		}
 		fmt.Fprintf(tlsSrv, "\r\n")
+		var copied int64
 		if req.Method != http.MethodHead {
-			_, _ = io.Copy(tlsSrv, resp.Body)
+			n, _ := io.Copy(tlsSrv, resp.Body)
+			copied = n
 		}
 		if cfg.Metrics != nil {
 			cfg.Metrics.ObserveDuration("ORIGIN-"+strconv.Itoa(resp.StatusCode), time.Since(start).Seconds())
@@ -315,7 +343,7 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 			Outcome:     "ORIGIN-" + strconv.Itoa(resp.StatusCode),
 			IsTLS:       true,
 			LatencySecs: time.Since(start).Seconds(),
-			Size:        0,
+			Size:        copied,
 			Status:      resp.StatusCode,
 		})
 		log.Info().Str("url", rawURL).Str("outcome", "ORIGIN-"+strconv.Itoa(resp.StatusCode)).Dur("latency", time.Since(start)).Msg("proxied origin (https mitm)")

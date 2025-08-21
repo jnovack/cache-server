@@ -262,7 +262,22 @@ func writeReply(bw *bufio.Writer, rep byte) error {
 	return nil
 }
 
-// AttachCaptureStore allows attaching a capture store to the SOCKS server.
+// AttachCaptureStore allows attaching (or replacing) a capture store.
+// It will always chain with any existing RequestObserver so both fire.
 func (s *Server) AttachCaptureStore(cs *CaptureStore) {
+	if cs == nil {
+		return
+	}
+
+	prev := s.CacheCfg.RequestObserver
+	if prev == nil {
+		s.CacheCfg.RequestObserver = cs.Add
+	} else {
+		s.CacheCfg.RequestObserver = func(r cacheproxy.RequestRecord) {
+			prev(r)
+			cs.Add(r)
+		}
+	}
+
 	s.Capture = cs
 }

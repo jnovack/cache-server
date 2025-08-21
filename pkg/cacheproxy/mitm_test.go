@@ -2,8 +2,14 @@ package cacheproxy
 
 import (
 	"bufio"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -104,5 +110,81 @@ func TestHandleMITMHTTPS_EndToEnd(t *testing.T) {
 	_, xc3 := runOnce()
 	if xc3 != "REVALIDATED" && xc3 != "HIT" {
 		t.Fatalf("expected REVALIDATED/HIT, got %s", xc3)
+	}
+}
+
+// lightweight test RootCAProvider that generates self-signed leaf certs for each host.
+type testRootCA struct{}
+
+func (t *testRootCA) GetOrCreateLeaf(host string) (tls.Certificate, error) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	serial, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: host},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{host},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &priv.PublicKey, priv)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)})
+	return tls.X509KeyPair(certPEM, keyPEM)
+}
+
+func (t *testRootCA) PEM() []byte { return nil }
+
+// Test that MITM uses SNI (ClientHello.ServerName) to select the leaf certificate.
+func TestMITM_SelectsCertBySNI(t *testing.T) {
+	serverSide, clientSide := net.Pipe()
+	defer serverSide.Close()
+	defer clientSide.Close()
+
+	cfg := Config{
+		CacheDir:        t.TempDir(),
+		RootCA:          &testRootCA{},
+		Private:         false,
+		HTTPClient:      nil,
+		RequestObserver: nil,
+	}
+
+	// run server side MITM in goroutine
+	go HandleMITMHTTPS(serverSide, "203.0.113.100", cfg)
+
+	// client initiates TLS handshake with ServerName set to proxy.cache-server.test
+	tlsClient := tls.Client(clientSide, &tls.Config{
+		ServerName:         "proxy.cache-server.test",
+		InsecureSkipVerify: true,
+	})
+	if err := tlsClient.Handshake(); err != nil {
+		t.Fatalf("client handshake failed: %v", err)
+	}
+	defer tlsClient.Close()
+
+	cs := tlsClient.ConnectionState()
+	if len(cs.PeerCertificates) == 0 {
+		t.Fatalf("no peer certificates presented")
+	}
+	leaf := cs.PeerCertificates[0]
+	// check common name or DNSNames include the requested SNI name
+	ok := leaf.Subject.CommonName == "proxy.cache-server.test"
+	if !ok {
+		for _, n := range leaf.DNSNames {
+			if n == "proxy.cache-server.test" {
+				ok = true
+				break
+			}
+		}
+	}
+	if !ok {
+		t.Fatalf("presented certificate does not include SNI name; CN=%q DNSNames=%v", leaf.Subject.CommonName, leaf.DNSNames)
 	}
 }
