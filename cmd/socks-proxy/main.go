@@ -22,7 +22,7 @@ var (
 	flagAdminAddr = flag.String("admin-addr", ":8080", "admin HTTP listen address")
 	flagCacheDir  = flag.String("cache", "./cache", "cache directory")
 	flagLogLevel  = flag.String("log-level", "info", "log level")
-	flagRootPem   = flag.String("root-pem", "", "combined root pem (cert+key)")
+	flagRootPem   = flag.String("root-pem", *flagCacheDir+"/root.pem", "combined root pem (cert+key)")
 	flagRootCert  = flag.String("root-cert", "", "root cert file")
 	flagRootKey   = flag.String("root-key", "", "root key file")
 	flagDN        = flag.String("dn", "", "generate root CA DN")
@@ -81,6 +81,10 @@ func main() {
 			return
 		}
 		w.Header().Set("Content-Type", "application/x-pem-file")
+
+		// Set the Content-Disposition header to suggest the filename
+		w.Header().Set("Content-Disposition", "attachment; filename=\"root.pem\"")
+
 		_, _ = w.Write(root.PEM())
 	})
 	adminSrv := &http.Server{Addr: *flagAdminAddr, Handler: adminMux}
