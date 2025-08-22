@@ -19,21 +19,6 @@ import (
 	cachepkg "github.com/jnovack/cache-server/pkg/cache"
 )
 
-// internal: emit a record to the observer (non-blocking)
-func maybeObserve(cfg Config, rec RequestRecord) {
-	if cfg.RequestObserver == nil {
-		return
-	}
-	// copy to local var and call asynchronously to avoid blocking the request path.
-	go func(r RequestRecord) {
-		defer func() {
-			// defensive recover in case observer panics
-			_ = recover()
-		}()
-		cfg.RequestObserver(r)
-	}(rec)
-}
-
 // file locks to avoid concurrent writes to same cache path.
 var locks sync.Map // map[string]*sync.Mutex
 
@@ -88,7 +73,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 			}
 			log.Info().Str("url", rawURL).Str("outcome", "HIT").Dur("latency", time.Since(start)).Msg("served")
 			// observe
-			maybeObserve(cfg, RequestRecord{
+			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
 				URL:         rawURL,
 				Method:      r.Method,
@@ -123,7 +108,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 					cfg.Metrics.ObserveDuration("STALE", time.Since(start).Seconds())
 				}
 				log.Info().Str("url", rawURL).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale due to origin error")
-				maybeObserve(cfg, RequestRecord{
+				NotifyObserver(cfg.RequestObserver, RequestRecord{
 					Time:        time.Now(),
 					URL:         rawURL,
 					Method:      r.Method,
@@ -147,7 +132,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 			}
 			log.Error().Err(err).Str("url", rawURL).Msg("origin fetch failed")
 			http.Error(w, "bad gateway", http.StatusBadGateway)
-			maybeObserve(cfg, RequestRecord{
+			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
 				URL:         rawURL,
 				Method:      r.Method,
@@ -174,7 +159,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 					cfg.Metrics.ObserveDuration("REVALIDATED", time.Since(start).Seconds())
 				}
 				log.Info().Str("url", rawURL).Str("outcome", "REVALIDATED").Dur("latency", time.Since(start)).Msg("served")
-				maybeObserve(cfg, RequestRecord{
+				NotifyObserver(cfg.RequestObserver, RequestRecord{
 					Time:        time.Now(),
 					URL:         rawURL,
 					Method:      r.Method,
@@ -198,7 +183,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 				cfg.Metrics.IncOriginErrors()
 			}
 			http.Error(w, "not modified but no cached file", http.StatusInternalServerError)
-			maybeObserve(cfg, RequestRecord{
+			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
 				URL:         rawURL,
 				Method:      r.Method,
@@ -239,7 +224,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 					cfg.Metrics.ObserveDuration("BYPASS", time.Since(start).Seconds())
 				}
 				log.Info().Str("url", rawURL).Str("outcome", "BYPASS").Dur("latency", time.Since(start)).Msg("streamed (bypassed cache)")
-				maybeObserve(cfg, RequestRecord{
+				NotifyObserver(cfg.RequestObserver, RequestRecord{
 					Time:        time.Now(),
 					URL:         rawURL,
 					Method:      r.Method,
@@ -262,7 +247,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 			if err := WriteFileAtomic(cacheFile, resp.Body); err != nil {
 				log.Error().Err(err).Str("file", cacheFile).Msg("failed to write cache file")
 				http.Error(w, "server error", http.StatusInternalServerError)
-				maybeObserve(cfg, RequestRecord{
+				NotifyObserver(cfg.RequestObserver, RequestRecord{
 					Time:        time.Now(),
 					URL:         rawURL,
 					Method:      r.Method,
@@ -291,7 +276,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 				cfg.Metrics.ObserveDuration(outcome, time.Since(start).Seconds())
 			}
 			log.Info().Str("url", rawURL).Str("outcome", outcome).Dur("latency", time.Since(start)).Msg("served")
-			maybeObserve(cfg, RequestRecord{
+			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
 				URL:         rawURL,
 				Method:      r.Method,
@@ -319,7 +304,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 					cfg.Metrics.ObserveDuration("STALE", time.Since(start).Seconds())
 				}
 				log.Info().Str("url", rawURL).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale due to non-200 origin")
-				maybeObserve(cfg, RequestRecord{
+				NotifyObserver(cfg.RequestObserver, RequestRecord{
 					Time:        time.Now(),
 					URL:         rawURL,
 					Method:      r.Method,
@@ -353,7 +338,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 				cfg.Metrics.ObserveDuration("ORIGIN-"+strconv.Itoa(resp.StatusCode), time.Since(start).Seconds())
 			}
 			log.Info().Str("url", rawURL).Str("outcome", "ORIGIN-"+strconv.Itoa(resp.StatusCode)).Dur("latency", time.Since(start)).Msg("proxied origin response")
-			maybeObserve(cfg, RequestRecord{
+			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
 				URL:         rawURL,
 				Method:      r.Method,
@@ -442,7 +427,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 			cfg.Metrics.ObserveDuration("HIT", time.Since(start).Seconds())
 		}
 		log.Info().Str("url", rawURL).Str("outcome", "HIT").Dur("latency", time.Since(start)).Msg("served (conn)")
-		maybeObserve(cfg, RequestRecord{
+		NotifyObserver(cfg.RequestObserver, RequestRecord{
 			Time:        time.Now(),
 			URL:         rawURL,
 			Method:      req.Method,
@@ -471,7 +456,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 				cfg.Metrics.ObserveDuration("STALE", time.Since(start).Seconds())
 			}
 			log.Info().Str("url", rawURL).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale (conn)")
-			maybeObserve(cfg, RequestRecord{
+			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
 				URL:         rawURL,
 				Method:      req.Method,
@@ -495,7 +480,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 		}
 		log.Error().Err(err).Str("url", rawURL).Msg("origin fetch failed (conn)")
 		fmt.Fprintf(conn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBad Gateway")
-		maybeObserve(cfg, RequestRecord{
+		NotifyObserver(cfg.RequestObserver, RequestRecord{
 			Time:        time.Now(),
 			URL:         rawURL,
 			Method:      req.Method,
@@ -522,7 +507,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 				cfg.Metrics.ObserveDuration("REVALIDATED", time.Since(start).Seconds())
 			}
 			log.Info().Str("url", rawURL).Str("outcome", "REVALIDATED").Dur("latency", time.Since(start)).Msg("served (conn)")
-			maybeObserve(cfg, RequestRecord{
+			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
 				URL:         rawURL,
 				Method:      req.Method,
@@ -546,7 +531,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 			cfg.Metrics.IncOriginErrors()
 		}
 		fmt.Fprintf(conn, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 21\r\nConnection: close\r\n\r\nNot Modified without cache")
-		maybeObserve(cfg, RequestRecord{
+		NotifyObserver(cfg.RequestObserver, RequestRecord{
 			Time:        time.Now(),
 			URL:         rawURL,
 			Method:      req.Method,
@@ -585,7 +570,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 				cfg.Metrics.ObserveDuration("BYPASS", time.Since(start).Seconds())
 			}
 			log.Info().Str("url", rawURL).Str("outcome", "BYPASS").Dur("latency", time.Since(start)).Msg("streamed (conn bypass)")
-			maybeObserve(cfg, RequestRecord{
+			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
 				URL:         rawURL,
 				Method:      req.Method,
@@ -603,7 +588,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 		if err := WriteFileAtomic(cacheFile, resp.Body); err != nil {
 			log.Error().Err(err).Str("file", cacheFile).Msg("failed to write cache file (conn)")
 			fmt.Fprintf(conn, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 13\r\nConnection: close\r\n\r\nServer Error")
-			maybeObserve(cfg, RequestRecord{
+			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
 				URL:         rawURL,
 				Method:      req.Method,
@@ -630,7 +615,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 			cfg.Metrics.ObserveDuration(outcome, time.Since(start).Seconds())
 		}
 		log.Info().Str("url", rawURL).Str("outcome", outcome).Dur("latency", time.Since(start)).Msg("served (conn)")
-		maybeObserve(cfg, RequestRecord{
+		NotifyObserver(cfg.RequestObserver, RequestRecord{
 			Time:        time.Now(),
 			URL:         rawURL,
 			Method:      req.Method,
@@ -657,7 +642,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 				cfg.Metrics.ObserveDuration("STALE", time.Since(start).Seconds())
 			}
 			log.Info().Str("url", rawURL).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale (conn non-200)")
-			maybeObserve(cfg, RequestRecord{
+			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
 				URL:         rawURL,
 				Method:      req.Method,
@@ -692,7 +677,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 			cfg.Metrics.ObserveDuration("ORIGIN-"+strconv.Itoa(resp.StatusCode), time.Since(start).Seconds())
 		}
 		log.Info().Str("url", rawURL).Str("outcome", "ORIGIN-"+strconv.Itoa(resp.StatusCode)).Dur("latency", time.Since(start)).Msg("proxied origin response (conn)")
-		maybeObserve(cfg, RequestRecord{
+		NotifyObserver(cfg.RequestObserver, RequestRecord{
 			Time:        time.Now(),
 			URL:         rawURL,
 			Method:      req.Method,

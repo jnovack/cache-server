@@ -68,8 +68,12 @@ func NotifyObserver(obs RequestObserver, rec RequestRecord) {
 	if obs == nil {
 		return
 	}
-	go func() {
-		defer func() { _ = recover() }()
-		obs(rec)
-	}()
+	// copy to local var and call asynchronously to avoid blocking the request path.
+	go func(r RequestRecord) {
+		defer func() {
+			// defensive recover in case observer panics
+			_ = recover()
+		}()
+		obs(r)
+	}(rec)
 }
