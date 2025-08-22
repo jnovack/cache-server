@@ -379,10 +379,12 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 // caching logic and writes back the HTTP response over conn. This is used by the socks code.
 func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 	start := time.Now()
+
 	if cfg.Metrics != nil {
 		cfg.Metrics.IncTotalRequests()
 	}
 
+	// HTTP specific checks
 	req, err := http.ReadRequest(br)
 	if err != nil {
 		if cfg.Metrics != nil {

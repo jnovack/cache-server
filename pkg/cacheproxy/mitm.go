@@ -29,6 +29,7 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 		cfg.Metrics.IncTotalRequests()
 	}
 
+	// TLS specific checks
 	if cfg.RootCA == nil {
 		log.Error().Str("host", host).Msg("MITM requested but RootCA is nil")
 		fmt.Fprintf(conn, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 21\r\nConnection: close\r\n\r\nRoot CA not configured")
@@ -62,8 +63,13 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 	}
 
 	br := bufio.NewReader(tlsSrv)
+
+	// HTTP specific checks
 	req, err := http.ReadRequest(br)
 	if err != nil {
+		if cfg.Metrics != nil {
+			cfg.Metrics.IncOriginErrors()
+		}
 		log.Debug().Err(err).Msg("failed to read HTTPS request from client")
 		// reply directly over the TLS connection
 		fmt.Fprintf(tlsSrv, "HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBad Request")
@@ -78,7 +84,11 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 		return
 	}
 
-	originURL := &url.URL{Scheme: "https", Host: req.Host}
+	// Build origin URL
+	originURL := &url.URL{
+		Scheme: "https",
+		Host:   req.Host,
+	}
 	uri := req.URL.RequestURI()
 	if uri == "" {
 		uri = "/"
