@@ -258,9 +258,6 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 		_ = cachepkg.WriteMeta(metaFile, newMeta)
 		fi2, _ := os.Stat(cacheFile)
 		outcome := "MISS"
-		if didCond || (fi2 != nil && !fi2.ModTime().IsZero()) {
-			outcome = "REVALIDATED"
-		}
 		sendCachedOnConn(tlsSrv, http.StatusOK, newMeta, outcome, req.Method == http.MethodHead, cacheFile, fi2)
 		if cfg.Metrics != nil {
 			if outcome == "MISS" {

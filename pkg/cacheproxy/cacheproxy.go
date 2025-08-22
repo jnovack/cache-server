@@ -286,9 +286,6 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 			}
 			fi2, _ := os.Stat(cacheFile)
 			outcome := "MISS"
-			if exists || didCond {
-				outcome = "REVALIDATED"
-			}
 			sendCachedResponse(w, http.StatusOK, cacheFile, newMeta, outcome, r.Method == http.MethodHead, fi2)
 			if cfg.Metrics != nil {
 				if outcome == "MISS" {
@@ -636,9 +633,6 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 		_ = cachepkg.WriteMeta(metaFile, newMeta)
 		fi2, _ := os.Stat(cacheFile)
 		outcome := "MISS"
-		if exists || didCond {
-			outcome = "REVALIDATED"
-		}
 		sendCachedOnConn(conn, http.StatusOK, newMeta, outcome, req.Method == http.MethodHead, cacheFile, fi2)
 		if cfg.Metrics != nil {
 			if outcome == "MISS" {
