@@ -125,7 +125,7 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 			Size:        fi.Size(),
 			Status:      http.StatusOK,
 		})
-		log.Info().Str("url", rawURL).Str("outcome", "HIT").Dur("latency", time.Since(start)).Msg("served (https mitm)")
+		log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "HIT").Dur("latency", time.Since(start)).Msg("served")
 		return
 	}
 
@@ -160,13 +160,13 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 				}(),
 				Status: http.StatusOK,
 			})
-			log.Info().Str("url", rawURL).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale (https mitm)")
+			log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale")
 			return
 		}
 		if cfg.Metrics != nil {
 			cfg.Metrics.IncOriginErrors()
 		}
-		log.Error().Err(err).Str("url", rawURL).Msg("origin fetch failed (https mitm)")
+		log.Error().Err(err).Str("url", rawURL).Str("scheme", originURL.Scheme).Msg("origin fetch failed")
 		fmt.Fprintf(tlsSrv, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBad Gateway")
 		NotifyObserver(cfg.RequestObserver, RequestRecord{
 			Time:        time.Now(),
@@ -212,7 +212,7 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 				Status:      http.StatusOK,
 				Conditional: true,
 			})
-			log.Info().Str("url", rawURL).Str("outcome", "REVALIDATED").Dur("latency", time.Since(start)).Msg("served (https mitm)")
+			log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "REVALIDATED").Dur("latency", time.Since(start)).Msg("served")
 			return
 		}
 		fmt.Fprintf(tlsSrv, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 21\r\nConnection: close\r\n\r\nNot Modified without cache")
@@ -255,13 +255,13 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 				Size:        copied,
 				Status:      resp.StatusCode,
 			})
-			log.Info().Str("url", rawURL).Str("outcome", "BYPASS").Dur("latency", time.Since(start)).Msg("streamed (https mitm)")
+			log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "BYPASS").Dur("latency", time.Since(start)).Msg("streamed")
 			return
 		}
 
 		// persist to cache then serve
 		if err := WriteFileAtomic(cacheFile, resp.Body); err != nil {
-			log.Error().Err(err).Str("file", cacheFile).Msg("failed to write cache file (https mitm)")
+			log.Error().Err(err).Str("file", cacheFile).Msg("failed to write cache file")
 			fmt.Fprintf(tlsSrv, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 13\r\nConnection: close\r\n\r\nServer Error")
 			return
 		}
@@ -295,7 +295,7 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 			Status:      http.StatusOK,
 			Conditional: didCond,
 		})
-		log.Info().Str("url", rawURL).Str("outcome", outcome).Dur("latency", time.Since(start)).Msg("served (https mitm)")
+		log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", outcome).Dur("latency", time.Since(start)).Msg("served")
 		return
 	default:
 		// non-200: try stale, else stream origin
@@ -322,7 +322,7 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 				}(),
 				Status: http.StatusOK,
 			})
-			log.Info().Str("url", rawURL).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale (https mitm non-200)")
+			log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale (https mitm non-200)")
 			return
 		}
 		// forward origin body
@@ -353,6 +353,6 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 			Size:        copied,
 			Status:      resp.StatusCode,
 		})
-		log.Info().Str("url", rawURL).Str("outcome", "ORIGIN-"+strconv.Itoa(resp.StatusCode)).Dur("latency", time.Since(start)).Msg("proxied origin (https mitm)")
+		log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "ORIGIN-"+strconv.Itoa(resp.StatusCode)).Dur("latency", time.Since(start)).Msg("proxied origin")
 	}
 }

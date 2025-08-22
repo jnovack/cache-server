@@ -71,7 +71,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 				cfg.Metrics.IncHit()
 				cfg.Metrics.ObserveDuration("HIT", time.Since(start).Seconds())
 			}
-			log.Info().Str("url", rawURL).Str("outcome", "HIT").Dur("latency", time.Since(start)).Msg("served")
+			log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "HIT").Dur("latency", time.Since(start)).Msg("served")
 			// observe
 			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
@@ -107,7 +107,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 					cfg.Metrics.IncOriginErrors()
 					cfg.Metrics.ObserveDuration("STALE", time.Since(start).Seconds())
 				}
-				log.Info().Str("url", rawURL).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale due to origin error")
+				log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale due to origin error")
 				NotifyObserver(cfg.RequestObserver, RequestRecord{
 					Time:        time.Now(),
 					URL:         rawURL,
@@ -130,7 +130,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 			if cfg.Metrics != nil {
 				cfg.Metrics.IncOriginErrors()
 			}
-			log.Error().Err(err).Str("url", rawURL).Msg("origin fetch failed")
+			log.Error().Err(err).Str("url", rawURL).Str("scheme", originURL.Scheme).Msg("origin fetch failed")
 			http.Error(w, "bad gateway", http.StatusBadGateway)
 			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
@@ -158,7 +158,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 					cfg.Metrics.IncRevalidated()
 					cfg.Metrics.ObserveDuration("REVALIDATED", time.Since(start).Seconds())
 				}
-				log.Info().Str("url", rawURL).Str("outcome", "REVALIDATED").Dur("latency", time.Since(start)).Msg("served")
+				log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "REVALIDATED").Dur("latency", time.Since(start)).Msg("served")
 				NotifyObserver(cfg.RequestObserver, RequestRecord{
 					Time:        time.Now(),
 					URL:         rawURL,
@@ -223,7 +223,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 					cfg.Metrics.IncBypass()
 					cfg.Metrics.ObserveDuration("BYPASS", time.Since(start).Seconds())
 				}
-				log.Info().Str("url", rawURL).Str("outcome", "BYPASS").Dur("latency", time.Since(start)).Msg("streamed (bypassed cache)")
+				log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "BYPASS").Dur("latency", time.Since(start)).Msg("streamed (bypassed cache)")
 				NotifyObserver(cfg.RequestObserver, RequestRecord{
 					Time:        time.Now(),
 					URL:         rawURL,
@@ -275,7 +275,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 				}
 				cfg.Metrics.ObserveDuration(outcome, time.Since(start).Seconds())
 			}
-			log.Info().Str("url", rawURL).Str("outcome", outcome).Dur("latency", time.Since(start)).Msg("served")
+			log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", outcome).Dur("latency", time.Since(start)).Msg("served")
 			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
 				URL:         rawURL,
@@ -303,7 +303,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 					cfg.Metrics.IncStale()
 					cfg.Metrics.ObserveDuration("STALE", time.Since(start).Seconds())
 				}
-				log.Info().Str("url", rawURL).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale due to non-200 origin")
+				log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale due to non-200 origin")
 				NotifyObserver(cfg.RequestObserver, RequestRecord{
 					Time:        time.Now(),
 					URL:         rawURL,
@@ -337,7 +337,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 			if cfg.Metrics != nil {
 				cfg.Metrics.ObserveDuration("ORIGIN-"+strconv.Itoa(resp.StatusCode), time.Since(start).Seconds())
 			}
-			log.Info().Str("url", rawURL).Str("outcome", "ORIGIN-"+strconv.Itoa(resp.StatusCode)).Dur("latency", time.Since(start)).Msg("proxied origin response")
+			log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "ORIGIN-"+strconv.Itoa(resp.StatusCode)).Dur("latency", time.Since(start)).Msg("proxied origin response")
 			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
 				URL:         rawURL,
@@ -426,7 +426,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 			cfg.Metrics.IncHit()
 			cfg.Metrics.ObserveDuration("HIT", time.Since(start).Seconds())
 		}
-		log.Info().Str("url", rawURL).Str("outcome", "HIT").Dur("latency", time.Since(start)).Msg("served (conn)")
+		log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "HIT").Dur("latency", time.Since(start)).Str("scheme", originURL.Scheme).Msg("served")
 		NotifyObserver(cfg.RequestObserver, RequestRecord{
 			Time:        time.Now(),
 			URL:         rawURL,
@@ -455,7 +455,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 				cfg.Metrics.IncOriginErrors()
 				cfg.Metrics.ObserveDuration("STALE", time.Since(start).Seconds())
 			}
-			log.Info().Str("url", rawURL).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale (conn)")
+			log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale (conn)")
 			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
 				URL:         rawURL,
@@ -478,7 +478,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 		if cfg.Metrics != nil {
 			cfg.Metrics.IncOriginErrors()
 		}
-		log.Error().Err(err).Str("url", rawURL).Msg("origin fetch failed (conn)")
+		log.Error().Err(err).Str("url", rawURL).Str("scheme", originURL.Scheme).Msg("origin fetch failed (conn)")
 		fmt.Fprintf(conn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBad Gateway")
 		NotifyObserver(cfg.RequestObserver, RequestRecord{
 			Time:        time.Now(),
@@ -506,7 +506,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 				cfg.Metrics.IncRevalidated()
 				cfg.Metrics.ObserveDuration("REVALIDATED", time.Since(start).Seconds())
 			}
-			log.Info().Str("url", rawURL).Str("outcome", "REVALIDATED").Dur("latency", time.Since(start)).Msg("served (conn)")
+			log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "REVALIDATED").Dur("latency", time.Since(start)).Msg("served (conn)")
 			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
 				URL:         rawURL,
@@ -569,7 +569,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 				cfg.Metrics.IncBypass()
 				cfg.Metrics.ObserveDuration("BYPASS", time.Since(start).Seconds())
 			}
-			log.Info().Str("url", rawURL).Str("outcome", "BYPASS").Dur("latency", time.Since(start)).Msg("streamed (conn bypass)")
+			log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "BYPASS").Dur("latency", time.Since(start)).Msg("streamed (conn bypass)")
 			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
 				URL:         rawURL,
@@ -614,7 +614,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 			}
 			cfg.Metrics.ObserveDuration(outcome, time.Since(start).Seconds())
 		}
-		log.Info().Str("url", rawURL).Str("outcome", outcome).Dur("latency", time.Since(start)).Msg("served (conn)")
+		log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", outcome).Dur("latency", time.Since(start)).Msg("served (conn)")
 		NotifyObserver(cfg.RequestObserver, RequestRecord{
 			Time:        time.Now(),
 			URL:         rawURL,
@@ -641,7 +641,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 				cfg.Metrics.IncStale()
 				cfg.Metrics.ObserveDuration("STALE", time.Since(start).Seconds())
 			}
-			log.Info().Str("url", rawURL).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale (conn non-200)")
+			log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale (conn non-200)")
 			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
 				URL:         rawURL,
@@ -676,7 +676,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 		if cfg.Metrics != nil {
 			cfg.Metrics.ObserveDuration("ORIGIN-"+strconv.Itoa(resp.StatusCode), time.Since(start).Seconds())
 		}
-		log.Info().Str("url", rawURL).Str("outcome", "ORIGIN-"+strconv.Itoa(resp.StatusCode)).Dur("latency", time.Since(start)).Msg("proxied origin response (conn)")
+		log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "ORIGIN-"+strconv.Itoa(resp.StatusCode)).Dur("latency", time.Since(start)).Msg("proxied origin response (conn)")
 		NotifyObserver(cfg.RequestObserver, RequestRecord{
 			Time:        time.Now(),
 			URL:         rawURL,
