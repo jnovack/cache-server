@@ -77,15 +77,10 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 		defer mtx.Unlock()
 
 		meta := cachepkg.ReadMeta(metaFile)
-		exists := false
-		var fi os.FileInfo
-		if stat, err := os.Stat(cacheFile); err == nil && !stat.IsDir() {
-			exists = true
-			fi = stat
-		}
+		fi, _ := os.Stat(cacheFile)
 
 		// Serve fresh cache
-		if exists && !meta.NoCache && cachepkg.IsFresh(meta) {
+		if fi != nil && !meta.NoCache && cachepkg.IsFresh(meta) {
 			sendCachedResponse(w, http.StatusOK, cacheFile, meta, "HIT", r.Method == http.MethodHead, fi)
 			if cfg.Metrics != nil {
 				cfg.Metrics.IncHit()
@@ -119,7 +114,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 		}
 		resp, didCond, err := FetchOrigin(rawURL, meta, client)
 		if err != nil {
-			if exists {
+			if fi != nil {
 				// serve stale
 				sendCachedResponse(w, http.StatusOK, cacheFile, meta, "STALE", r.Method == http.MethodHead, fi)
 				if cfg.Metrics != nil {
@@ -172,7 +167,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 		case http.StatusNotModified:
 			newMeta := cachepkg.MetaFromHeaders(resp.Header, meta)
 			_ = cachepkg.WriteMeta(metaFile, newMeta)
-			if exists {
+			if fi != nil {
 				sendCachedResponse(w, http.StatusOK, cacheFile, newMeta, "REVALIDATED", r.Method == http.MethodHead, fi)
 				if cfg.Metrics != nil {
 					cfg.Metrics.IncRevalidated()
@@ -317,7 +312,7 @@ func CacheHandler(cfg Config) http.HandlerFunc {
 			return
 		default:
 			// non-200 from origin
-			if exists {
+			if fi != nil {
 				sendCachedResponse(w, http.StatusOK, cacheFile, meta, "STALE", r.Method == http.MethodHead, fi)
 				if cfg.Metrics != nil {
 					cfg.Metrics.IncStale()
@@ -437,15 +432,10 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 	defer mtx.Unlock()
 
 	meta := cachepkg.ReadMeta(metaFile)
-	exists := false
-	var fi os.FileInfo
-	if stat, err := os.Stat(cacheFile); err == nil && !stat.IsDir() {
-		exists = true
-		fi = stat
-	}
+	fi, _ := os.Stat(cacheFile)
 
 	// Serve fresh cache
-	if exists && !meta.NoCache && cachepkg.IsFresh(meta) {
+	if fi != nil && !meta.NoCache && cachepkg.IsFresh(meta) {
 		sendCachedOnConn(conn, http.StatusOK, meta, "HIT", req.Method == http.MethodHead, cacheFile, fi)
 		if cfg.Metrics != nil {
 			cfg.Metrics.IncHit()
@@ -461,13 +451,8 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 			Outcome:     "HIT",
 			IsTLS:       false,
 			LatencySecs: time.Since(start).Seconds(),
-			Size: func() int64 {
-				if fi != nil {
-					return fi.Size()
-				}
-				return 0
-			}(),
-			Status: http.StatusOK,
+			Size:        fi.Size(),
+			Status:      http.StatusOK,
 		})
 		return
 	}
@@ -478,7 +463,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 	}
 	resp, didCond, err := FetchOrigin(rawURL, meta, client)
 	if err != nil {
-		if exists {
+		if fi != nil {
 			sendCachedOnConn(conn, http.StatusOK, meta, "STALE", req.Method == http.MethodHead, cacheFile, fi)
 			if cfg.Metrics != nil {
 				cfg.Metrics.IncStale()
@@ -530,7 +515,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 	case http.StatusNotModified:
 		newMeta := cachepkg.MetaFromHeaders(resp.Header, meta)
 		_ = cachepkg.WriteMeta(metaFile, newMeta)
-		if exists {
+		if fi != nil {
 			sendCachedOnConn(conn, http.StatusOK, newMeta, "REVALIDATED", req.Method == http.MethodHead, cacheFile, fi)
 			if cfg.Metrics != nil {
 				cfg.Metrics.IncRevalidated()
