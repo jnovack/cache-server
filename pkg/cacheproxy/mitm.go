@@ -166,7 +166,6 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 		if cfg.Metrics != nil {
 			cfg.Metrics.IncOriginErrors()
 		}
-		log.Error().Err(err).Str("url", rawURL).Str("scheme", originURL.Scheme).Msg("origin fetch failed")
 		fmt.Fprintf(tlsSrv, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBad Gateway")
 		NotifyObserver(cfg.RequestObserver, RequestRecord{
 			Time:        time.Now(),
@@ -180,6 +179,7 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 			Size:        0,
 			Status:      http.StatusBadGateway,
 		})
+		log.Error().Err(err).Str("url", rawURL).Str("scheme", originURL.Scheme).Msg("origin fetch failed")
 		return
 	}
 	defer resp.Body.Close()
@@ -219,6 +219,7 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 		return
 	case http.StatusOK:
 		newMeta := cachepkg.MetaFromHeaders(resp.Header, meta)
+
 		// bypass conditions
 		if newMeta.NoStore || (!cfg.Private && req.Header.Get("Authorization") != "") || (!cfg.Private && newMeta.NoCache) {
 			if newMeta.NoStore && cfg.Metrics != nil {
@@ -227,12 +228,12 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 			if newMeta.NoCache && cfg.Metrics != nil {
 				cfg.Metrics.IncNoCache()
 			}
-			fmt.Fprintf(tlsSrv, "HTTP/1.1 %d %s\r\n", resp.StatusCode, http.StatusText(resp.StatusCode))
 			for k, vv := range resp.Header {
 				for _, v := range vv {
 					fmt.Fprintf(tlsSrv, "%s: %s\r\n", k, v)
 				}
 			}
+			fmt.Fprintf(tlsSrv, "HTTP/1.1 %d %s\r\n", resp.StatusCode, http.StatusText(resp.StatusCode))
 			fmt.Fprintf(tlsSrv, "X-Cache: BYPASS\r\nConnection: close\r\n\r\n")
 			var copied int64
 			if req.Method != http.MethodHead {
