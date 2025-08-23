@@ -68,6 +68,17 @@ type Config struct {
 	RequestObserver RequestObserver
 }
 
+// hopByHopHeaders lists HTTP/1.x hop-by-hop headers that must not be forwarded.
+var hopByHopHeaders = map[string]bool{
+	"connection":        true,
+	"proxy-connection":  true,
+	"keep-alive":        true,
+	"te":                true,
+	"trailer":           true,
+	"transfer-encoding": true,
+	"upgrade":           true,
+}
+
 // NotifyObserver invokes an observer asynchronously (defensive recover).
 func NotifyObserver(obs RequestObserver, rec RequestRecord) {
 	if obs == nil {

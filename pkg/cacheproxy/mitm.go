@@ -243,7 +243,9 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 	case http.StatusOK:
 		newMeta := cachepkg.MetaFromHeaders(resp.Header, meta)
 
-		// bypass conditions
+		// BYPASS: origin response must be forwarded without caching. Write a well-formed
+		// HTTP response: status line -> headers -> CRLF -> body. Do not write any headers
+		// before the status line (that was causing the malformed-status issues).
 		if newMeta.NoStore || (!cfg.Private && req.Header.Get("Authorization") != "") || (!cfg.Private && newMeta.NoCache) {
 			if newMeta.NoStore && cfg.Metrics != nil {
 				cfg.Metrics.IncNoStore()
@@ -251,18 +253,42 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 			if newMeta.NoCache && cfg.Metrics != nil {
 				cfg.Metrics.IncNoCache()
 			}
+			// Build a safe header set to emit.
+			outHdr := make(http.Header)
 			for k, vv := range resp.Header {
+				lk := strings.ToLower(k)
+				if hopByHopHeaders[lk] {
+					continue
+				}
 				for _, v := range vv {
-					fmt.Fprintf(tlsSrv, "%s: %s\r\n", k, v)
+					outHdr.Add(k, v)
 				}
 			}
-			fmt.Fprintf(tlsSrv, "HTTP/1.1 %d %s\r\n", resp.StatusCode, http.StatusText(resp.StatusCode))
-			fmt.Fprintf(tlsSrv, "X-Cache: BYPASS\r\nConnection: close\r\n\r\n")
+			// Ensure we declare the response is a BYPASS and close the connection.
+			outHdr.Set("X-Cache", "BYPASS")
+			outHdr.Set("Connection", "close")
+
+			// Write status line first (HTTP/1.1), then headers, then blank line, then body.
+			_, _ = fmt.Fprintf(tlsSrv, "HTTP/1.1 %d %s\r\n", resp.StatusCode, http.StatusText(resp.StatusCode))
+			for k, vv := range outHdr {
+				for _, v := range vv {
+					_, _ = fmt.Fprintf(tlsSrv, "%s: %s\r\n", k, v)
+				}
+			}
+			_, _ = fmt.Fprintf(tlsSrv, "\r\n")
+
+			// Stream body (unless HEAD). Measure bytes copied for metrics/observer.
 			var copied int64
-			if req.Method != http.MethodHead {
+			if req.Method != http.MethodHead && resp.Body != nil {
 				n, _ := io.Copy(tlsSrv, resp.Body)
 				copied = n
 			}
+
+			// Close upstream response body now that we've forwarded it.
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+
 			if cfg.Metrics != nil {
 				cfg.Metrics.IncBypass()
 				cfg.Metrics.ObserveDuration("BYPASS", time.Since(start).Seconds())
@@ -279,7 +305,7 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 				Size:        copied,
 				Status:      resp.StatusCode,
 			})
-			log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "BYPASS").Dur("latency", time.Since(start)).Msg("streamed")
+			log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "BYPASS").Dur("latency", time.Since(start)).Msg("streamed origin without caching")
 			return
 		}
 
