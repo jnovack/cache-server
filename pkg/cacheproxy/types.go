@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"net/http"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 // RequestRecord represents a captured request/result for in-memory inspection
@@ -22,6 +24,9 @@ type RequestRecord struct {
 	Status      int       `json:"status"`
 	Conditional bool      `json:"conditional"`
 }
+
+type ConnectionIDKey struct{}
+type RequestIDKey struct{}
 
 // RequestObserver receives RequestRecords. Observers should be fast — NotifyObserver
 // will invoke them asynchronously.
@@ -72,7 +77,14 @@ func NotifyObserver(obs RequestObserver, rec RequestRecord) {
 	go func(r RequestRecord) {
 		defer func() {
 			// defensive recover in case observer panics
-			_ = recover()
+			if err := recover(); err != nil {
+				log.Error().
+					Interface("panic", err).
+					Str("record_url", r.URL).
+					Str("record_method", r.Method).
+					Str("record_output", r.Outcome).
+					Msg("observer panicked")
+			}
 		}()
 		obs(r)
 	}(rec)
