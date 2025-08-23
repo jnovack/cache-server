@@ -79,29 +79,37 @@ func (s *Server) Close() error {
 
 func (s *Server) acceptLoop() {
 	for {
+		id := uuid.Must(uuid.NewV7())
+		ctx := context.WithValue(context.Background(), cacheproxy.ConnectionIDKey{}, id)
 		conn, err := s.ln.Accept()
 		if err != nil {
 			select {
 			case <-s.done:
-				log.Debug().Err(err).Msg("listener closed, exiting accept loop")
+				log.Ctx(ctx).Debug().
+					Str("connection_id", ctx.Value(cacheproxy.ConnectionIDKey{}).(uuid.UUID).String()).
+					Err(err).Msg("listener closed, exiting accept loop")
 				return
 			default:
 			}
 			if strings.Contains(err.Error(), "use of closed network connection") || strings.Contains(err.Error(), "listener closed") {
-				log.Debug().Err(err).Msg("listener closed, exiting accept loop")
+				log.Ctx(ctx).Debug().
+					Str("connection_id", ctx.Value(cacheproxy.ConnectionIDKey{}).(uuid.UUID).String()).
+					Err(err).Msg("listener closed, exiting accept loop")
 				return
 			}
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				log.Warn().Err(err).Msg("temporary accept error, retrying")
+				log.Ctx(ctx).Warn().
+					Str("connection_id", ctx.Value(cacheproxy.ConnectionIDKey{}).(uuid.UUID).String()).
+					Err(err).Msg("temporary accept error, retrying")
 				time.Sleep(50 * time.Millisecond)
 				continue
 			}
-			log.Warn().Err(err).Msg("accept error")
+			log.Ctx(ctx).Warn().
+				Str("connection_id", ctx.Value(cacheproxy.ConnectionIDKey{}).(uuid.UUID).String()).
+				Err(err).Msg("accept error")
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
-		id := uuid.Must(uuid.NewV7())
-		ctx := context.WithValue(context.Background(), cacheproxy.ConnectionIDKey{}, id)
 		go s.handleConn(ctx, conn)
 	}
 }
