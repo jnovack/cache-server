@@ -3,6 +3,7 @@ package socks
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
 	"io"
 	"net"
@@ -12,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog/log"
-
+	"github.com/google/uuid"
 	"github.com/jnovack/cache-server/pkg/ca"
 	"github.com/jnovack/cache-server/pkg/cacheproxy"
+	"github.com/rs/zerolog/log"
 )
 
 // Server is a SOCKS5 server (no-auth) with HTTPS MITM support.
@@ -99,11 +100,13 @@ func (s *Server) acceptLoop() {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
-		go s.handleConn(conn)
+		id := uuid.Must(uuid.NewV7())
+		ctx := context.WithValue(context.Background(), cacheproxy.ConnectionIDKey{}, id)
+		go s.handleConn(ctx, conn)
 	}
 }
 
-func (s *Server) handleConn(conn net.Conn) {
+func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(120 * time.Second))
 
