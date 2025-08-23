@@ -23,7 +23,7 @@ import (
 	"github.com/jnovack/cache-server/pkg/ca"
 )
 
-func TestHandleMITMHTTPS_EndToEnd(t *testing.T) {
+func TestHandleHTTPS_EndToEnd(t *testing.T) {
 	td := t.TempDir()
 
 	// Origin TLS server with ETag+max-age=1 and 304 on If-None-Match.
@@ -67,7 +67,7 @@ func TestHandleMITMHTTPS_EndToEnd(t *testing.T) {
 	runOnce := func() (body string, status string) {
 		srv, cli := net.Pipe()
 		ctx := context.WithValue(context.Background(), ConnectionIDKey{}, uuid.Must(uuid.NewV7()))
-		go HandleMITMHTTPS(ctx, srv, strings.Split(hostPort, ":")[0], cfg)
+		go HandleHTTPS(ctx, srv, strings.Split(hostPort, ":")[0], cfg)
 
 		tlsCli := tls.Client(cli, &tls.Config{
 			InsecureSkipVerify: true,
@@ -162,7 +162,7 @@ func TestMITM_SelectsCertBySNI(t *testing.T) {
 	}
 
 	// run server side MITM in goroutine
-	go HandleMITMHTTPS(ctx, serverSide, "203.0.113.100", cfg)
+	go HandleHTTPS(ctx, serverSide, "203.0.113.100", cfg)
 
 	// client initiates TLS handshake with ServerName set to proxy.cache-server.test
 	tlsClient := tls.Client(clientSide, &tls.Config{
@@ -222,7 +222,7 @@ func TestMITM_BypassOnAuthorizationWhenPrivateFalse(t *testing.T) {
 	runOnce := func() (status int, xcache string, body string) {
 		srv, cli := net.Pipe()
 		ctx := context.WithValue(context.Background(), ConnectionIDKey{}, uuid.Must(uuid.NewV7()))
-		go HandleMITMHTTPS(ctx, srv, strings.Split(hostPort, ":")[0], cfg)
+		go HandleHTTPS(ctx, srv, strings.Split(hostPort, ":")[0], cfg)
 
 		tlsCli := tls.Client(cli, &tls.Config{InsecureSkipVerify: true})
 		if err := tlsCli.Handshake(); err != nil {
@@ -288,7 +288,7 @@ func TestMITM_NoStoreAndNoCacheCauseBypass(t *testing.T) {
 	doReq := func(path string) (xcache string) {
 		srv, cli := net.Pipe()
 		ctx := context.WithValue(context.Background(), ConnectionIDKey{}, uuid.Must(uuid.NewV7()))
-		go HandleMITMHTTPS(ctx, srv, strings.Split(host, ":")[0], cfg)
+		go HandleHTTPS(ctx, srv, strings.Split(host, ":")[0], cfg)
 		tlsCli := tls.Client(cli, &tls.Config{InsecureSkipVerify: true})
 		if err := tlsCli.Handshake(); err != nil {
 			t.Fatalf("handshake: %v", err)
@@ -346,7 +346,7 @@ func TestMITM_HEAD_IsCacheableAndHasNoBody(t *testing.T) {
 	func() {
 		srv, cli := net.Pipe()
 		ctx := context.WithValue(context.Background(), ConnectionIDKey{}, uuid.Must(uuid.NewV7()))
-		go HandleMITMHTTPS(ctx, srv, strings.Split(host, ":")[0], cfg)
+		go HandleHTTPS(ctx, srv, strings.Split(host, ":")[0], cfg)
 		tlsCli := tls.Client(cli, &tls.Config{InsecureSkipVerify: true})
 		if err := tlsCli.Handshake(); err != nil {
 			t.Fatalf("handshake: %v", err)
@@ -374,7 +374,7 @@ func TestMITM_HEAD_IsCacheableAndHasNoBody(t *testing.T) {
 	func() {
 		srv, cli := net.Pipe()
 		ctx := context.WithValue(context.Background(), ConnectionIDKey{}, uuid.Must(uuid.NewV7()))
-		go HandleMITMHTTPS(ctx, srv, strings.Split(host, ":")[0], cfg)
+		go HandleHTTPS(ctx, srv, strings.Split(host, ":")[0], cfg)
 		tlsCli := tls.Client(cli, &tls.Config{InsecureSkipVerify: true})
 		if err := tlsCli.Handshake(); err != nil {
 			t.Fatalf("handshake2: %v", err)
@@ -431,7 +431,7 @@ func TestMITM_LastModified_Revalidation(t *testing.T) {
 	run := func() string {
 		srv, cli := net.Pipe()
 		ctx := context.WithValue(context.Background(), ConnectionIDKey{}, uuid.Must(uuid.NewV7()))
-		go HandleMITMHTTPS(ctx, srv, strings.Split(host, ":")[0], cfg)
+		go HandleHTTPS(ctx, srv, strings.Split(host, ":")[0], cfg)
 		tlsCli := tls.Client(cli, &tls.Config{InsecureSkipVerify: true})
 		if err := tlsCli.Handshake(); err != nil {
 			t.Fatalf("handshake: %v", err)
@@ -494,7 +494,7 @@ func TestMITM_ServeStaleOnOriginError(t *testing.T) {
 	do := func() (string, string) {
 		srv, cli := net.Pipe()
 		ctx := context.WithValue(context.Background(), ConnectionIDKey{}, uuid.Must(uuid.NewV7()))
-		go HandleMITMHTTPS(ctx, srv, strings.Split(host, ":")[0], cfg)
+		go HandleHTTPS(ctx, srv, strings.Split(host, ":")[0], cfg)
 		tlsCli := tls.Client(cli, &tls.Config{InsecureSkipVerify: true})
 		if err := tlsCli.Handshake(); err != nil {
 			t.Fatalf("handshake: %v", err)

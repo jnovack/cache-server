@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,6 +33,7 @@ import (
 	"github.com/jnovack/cache-server/pkg/ca"
 	"github.com/jnovack/cache-server/pkg/cacheproxy"
 	"github.com/jnovack/cache-server/pkg/socks"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -342,6 +344,7 @@ func TestEndToEnd_Cache_Fresh_HIT(t *testing.T) {
 		RootCA: root,
 	}
 	require.NoError(t, os.MkdirAll(s.CacheCfg.CacheDir, 0o755))
+	log.Debug().Str("CacheDir", s.CacheCfg.CacheDir).Msg("using cache dir")
 	require.NoError(t, s.Start(), "start socks proxy")
 	t.Cleanup(func() { _ = s.Close() })
 
@@ -355,6 +358,8 @@ func TestEndToEnd_Cache_Fresh_HIT(t *testing.T) {
 	const path = "/random.txt"
 	originHostPort := strings.TrimPrefix(origin.URL, "https://")
 
+	log.Debug().Str("uri", originHostPort+path).Msg("fetching URL")
+
 	// First fetch: should hit origin and write to cache.
 	sendHTTPRequest(t, tlsConn, http.MethodGet, originHostPort, path)
 	br := bufio.NewReader(tlsConn)
@@ -365,8 +370,15 @@ func TestEndToEnd_Cache_Fresh_HIT(t *testing.T) {
 	assert.Contains(t, resp.Header.Get("X-Cache"), "MISS", "first response should be from origin")
 	require.Equal(t, content, string(firstBody), "content mismatch on first fetch")
 
+	// Origin file should be cached on disk now.
+	originURL := &url.URL{
+		Scheme:   "https",
+		Host:     originHostPort,
+		Path:     path,
+		RawQuery: "",
+	}
 	// Check file exists on disk in expected path.
-	cacheFile, _ := cacheproxy.CachePathForOrigin(s.CacheCfg.CacheDir, originHostPort, path)
+	cacheFile, _ := cacheproxy.CachePathForOrigin(s.CacheCfg.CacheDir, *originURL)
 	_, err := os.Stat(cacheFile)
 	require.NoError(t, err, "cache file should exist after first fetch")
 

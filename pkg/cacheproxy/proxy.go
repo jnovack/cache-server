@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -27,10 +28,11 @@ func fileMutex(key string) *sync.Mutex {
 }
 
 // CachePathForOrigin maps an origin host + path to a file path on disk.
-func CachePathForOrigin(cacheDir, host, p string) (string, string) {
-	clean := path.Clean("/" + strings.TrimPrefix(p, "/"))
-	rel := filepath.Join(filepath.FromSlash(host), filepath.FromSlash(clean))
+func CachePathForOrigin(cacheDir string, originURL url.URL) (string, string) {
+	clean := path.Clean("/" + strings.TrimPrefix(originURL.Path, "/"))
+	rel := filepath.Join(filepath.FromSlash(originURL.Host), filepath.FromSlash(clean))
 	fp := filepath.Join(cacheDir, rel)
+	// log.Trace().Str("origin", originURL.String()).Str("file_path", fp).Str("function", "CachePathForOrigin").Msg("CachePathForOrigin()")
 	return fp, fp + ".meta.json"
 }
 
@@ -106,6 +108,7 @@ func proxyCopy(a, b net.Conn) error {
 
 // sendCachedOnConn writes an HTTP response over conn based on a cached file + meta.
 func sendCachedOnConn(conn net.Conn, status int, meta cachepkg.Meta, outcome string, headOnly bool, filePath string, fi os.FileInfo) {
+	log.Trace().Str("file", filePath).Int("status", status).Str("outcome", outcome).Bool("head_only", headOnly).Msg("sending cached response on conn")
 	fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\n", status, http.StatusText(status))
 	if meta.ContentType != "" {
 		fmt.Fprintf(conn, "Content-Type: %s\r\n", meta.ContentType)
@@ -143,4 +146,16 @@ func sendCachedOnConn(conn net.Conn, status int, meta cachepkg.Meta, outcome str
 	}
 	defer f.Close()
 	_, _ = io.Copy(conn, f)
+}
+
+// sendError writes an HTTP error response over conn.
+func sendError(conn net.Conn, status int) {
+	fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", status, http.StatusText(status), len(http.StatusText(status)), http.StatusText(status))
+	return
+}
+
+// sendError writes an HTTP error response over conn.
+func sendCustomError(conn net.Conn, status int, message string) {
+	fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", status, http.StatusText(status), len(message), message)
+	return
 }

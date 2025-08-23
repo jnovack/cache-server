@@ -25,7 +25,7 @@ func runMITMOnce(t *testing.T, cfg Config, hostPort, path string) (body, xcache 
 
 	serverSide, clientSide := net.Pipe()
 	ctx := context.WithValue(context.Background(), ConnectionIDKey{}, uuid.Must(uuid.NewV7()))
-	go HandleMITMHTTPS(ctx, serverSide, strings.Split(hostPort, ":")[0], cfg)
+	go HandleHTTPS(ctx, serverSide, strings.Split(hostPort, ":")[0], cfg)
 
 	cli := tls.Client(clientSide, &tls.Config{InsecureSkipVerify: true})
 	if err := cli.Handshake(); err != nil {

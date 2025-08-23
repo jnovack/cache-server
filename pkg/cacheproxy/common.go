@@ -1,7 +1,6 @@
 package cacheproxy
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -12,7 +11,6 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,91 +19,49 @@ import (
 	cachepkg "github.com/jnovack/cache-server/pkg/cache"
 )
 
-// file locks to avoid concurrent writes to same cache path.
-var locks sync.Map // map[string]*sync.Mutex
-
-// HandleHTTPOverConn reads a single HTTP request from br (wrapping conn), processes
-// caching logic and writes back the HTTP response over conn. This is used by the socks code.
-func HandleHTTPOverConn(ctx context.Context, conn net.Conn, host string, cfg Config) {
-	reqID := uuid.Must(uuid.NewV7()) // request_id
-	ctx = context.WithValue(ctx, RequestIDKey{}, reqID)
-	log.Ctx(ctx).Debug().
-		Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
-		Str("request_id", reqID.String()).
-		Msg("handling HTTP over connection")
+// HandleCacheRequest is the main entry for both HTTP and HTTPS cache logic.
+// It handles cache lookup, origin fetch, cache write, and response sending.
+// All protocol-specific response writing is abstracted via function arguments.
+func HandleCacheRequest(
+	ctx context.Context,
+	conn net.Conn,
+	req *http.Request,
+	cfg Config,
+	isTLS bool,
+) {
+	// Extract needed fields from cfg
 	start := time.Now()
-
-	if cfg.Metrics != nil {
-		cfg.Metrics.IncTotalRequests()
+	scheme := "http"
+	if isTLS {
+		scheme = "https"
 	}
+	reqID := ctx.Value(RequestIDKey{}).(uuid.UUID)
 
-	br := bufio.NewReader(conn)
-
-	// HTTP specific checks
-	req, err := http.ReadRequest(br)
-	if err != nil {
-		if cfg.Metrics != nil {
-			cfg.Metrics.IncOriginErrors()
-		}
-		log.Ctx(ctx).Debug().
-			Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
-			Str("request_id", reqID.String()).
-			Err(err).
-			Msg("failed to read HTTP request from connection")
-		fmt.Fprintf(conn, "HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBad Request")
-		return
-	}
-	defer req.Body.Close()
-
-	// Only GET and HEAD are cacheable; others are proxied (simple tunnel)
-	if req.Method != http.MethodGet && req.Method != http.MethodHead {
-		target := req.Host
-		if !strings.Contains(target, ":") {
-			target = net.JoinHostPort(target, "80")
-		}
-		server, err := net.DialTimeout("tcp", target, 15*time.Second)
-		if err != nil {
-			if cfg.Metrics != nil {
-				cfg.Metrics.IncOriginErrors()
-			}
-			log.Ctx(ctx).Error().
-				Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
-				Str("request_id", reqID.String()).
-				Err(err).
-				Str("target", target).
-				Msg("failed to dial origin for non-GET/HEAD")
-			fmt.Fprintf(conn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBad Gateway")
-			return
-		}
-		defer server.Close()
-		_ = req.Write(server)
-		_ = proxyCopy(conn, server)
-		return
-	}
-
-	// Build origin URL
-	originURL := &url.URL{
-		Scheme: "http",
-		Host:   req.Host,
-	}
+	// Build origin URL using scheme
 	uri := req.URL.RequestURI()
 	if uri == "" {
 		uri = "/"
 	}
-	parsed, _ := url.Parse(uri)
-	originURL.Path = path.Clean(parsed.Path)
-	originURL.RawQuery = parsed.RawQuery
+	parsed, _ := url.ParseRequestURI(uri)
+	originURL := &url.URL{
+		Scheme:   scheme,
+		Host:     req.Host,
+		Path:     path.Clean(parsed.Path),
+		RawQuery: parsed.RawQuery,
+	}
 	rawURL := originURL.String()
+	cacheFile, metaFile := CachePathForOrigin(cfg.CacheDir, *originURL)
 
-	cacheFile, metaFile := CachePathForOrigin(cfg.CacheDir, originURL.Host, originURL.Path)
 	mtx := fileMutex(cacheFile)
 	mtx.Lock()
 	defer mtx.Unlock()
 
+	//////////////////////////////////////////////////////////////
+
 	meta := cachepkg.ReadMeta(metaFile)
 	fi, _ := os.Stat(cacheFile)
 
-	// Serve fresh cache
+	// Serve fresh cache if present and fresh
 	if fi != nil && !meta.NoCache && cachepkg.IsFresh(meta) {
 		sendCachedOnConn(conn, http.StatusOK, meta, "HIT", req.Method == http.MethodHead, cacheFile, fi)
 		if cfg.Metrics != nil {
@@ -119,7 +75,7 @@ func HandleHTTPOverConn(ctx context.Context, conn net.Conn, host string, cfg Con
 			Host:        originURL.Host,
 			Path:        originURL.Path,
 			Outcome:     "HIT",
-			IsTLS:       false,
+			IsTLS:       isTLS,
 			LatencySecs: time.Since(start).Seconds(),
 			Size:        fi.Size(),
 			Status:      http.StatusOK,
@@ -141,6 +97,7 @@ func HandleHTTPOverConn(ctx context.Context, conn net.Conn, host string, cfg Con
 	}
 	resp, didCond, err := FetchOrigin(rawURL, meta, client)
 	if err != nil {
+		// attempt stale if exists
 		if fi != nil {
 			sendCachedOnConn(conn, http.StatusOK, meta, "STALE", req.Method == http.MethodHead, cacheFile, fi)
 			if cfg.Metrics != nil {
@@ -155,7 +112,7 @@ func HandleHTTPOverConn(ctx context.Context, conn net.Conn, host string, cfg Con
 				Host:        originURL.Host,
 				Path:        originURL.Path,
 				Outcome:     "STALE",
-				IsTLS:       false,
+				IsTLS:       isTLS,
 				LatencySecs: time.Since(start).Seconds(),
 				Size: func() int64 {
 					if fi != nil {
@@ -186,7 +143,7 @@ func HandleHTTPOverConn(ctx context.Context, conn net.Conn, host string, cfg Con
 			Host:        originURL.Host,
 			Path:        originURL.Path,
 			Outcome:     "ORIGIN-ERROR",
-			IsTLS:       false,
+			IsTLS:       isTLS,
 			LatencySecs: time.Since(start).Seconds(),
 			Size:        0,
 			Status:      http.StatusBadGateway,
@@ -219,7 +176,7 @@ func HandleHTTPOverConn(ctx context.Context, conn net.Conn, host string, cfg Con
 				Host:        originURL.Host,
 				Path:        originURL.Path,
 				Outcome:     "REVALIDATED",
-				IsTLS:       false,
+				IsTLS:       isTLS,
 				LatencySecs: time.Since(start).Seconds(),
 				Size: func() int64 {
 					if fi != nil {
@@ -260,6 +217,10 @@ func HandleHTTPOverConn(ctx context.Context, conn net.Conn, host string, cfg Con
 		return
 	case http.StatusOK:
 		newMeta := cachepkg.MetaFromHeaders(resp.Header, meta)
+
+		// BYPASS: origin response must be forwarded without caching. Write a well-formed
+		// HTTP response: status line -> headers -> CRLF -> body. Do not write any headers
+		// before the status line (that was causing the malformed-status issues).
 		if newMeta.NoStore || (!cfg.Private && req.Header.Get("Authorization") != "") || (!cfg.Private && newMeta.NoCache) {
 			if newMeta.NoStore && cfg.Metrics != nil {
 				cfg.Metrics.IncNoStore()
@@ -267,18 +228,42 @@ func HandleHTTPOverConn(ctx context.Context, conn net.Conn, host string, cfg Con
 			if newMeta.NoCache && cfg.Metrics != nil {
 				cfg.Metrics.IncNoCache()
 			}
-			fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\n", resp.StatusCode, http.StatusText(resp.StatusCode))
+			// Build a safe header set to emit.
+			outHdr := make(http.Header)
 			for k, vv := range resp.Header {
+				lk := strings.ToLower(k)
+				if hopByHopHeaders[lk] {
+					continue
+				}
 				for _, v := range vv {
-					fmt.Fprintf(conn, "%s: %s\r\n", k, v)
+					outHdr.Add(k, v)
 				}
 			}
-			fmt.Fprintf(conn, "X-Cache: BYPASS\r\nConnection: close\r\n\r\n")
+			// Ensure we declare the response is a BYPASS and close the connection.
+			outHdr.Set("X-Cache", "BYPASS")
+			outHdr.Set("Connection", "close")
+
+			// Write status line first (HTTP/1.1), then headers, then blank line, then body.
+			_, _ = fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\n", resp.StatusCode, http.StatusText(resp.StatusCode))
+			for k, vv := range outHdr {
+				for _, v := range vv {
+					_, _ = fmt.Fprintf(conn, "%s: %s\r\n", k, v)
+				}
+			}
+			_, _ = fmt.Fprintf(conn, "\r\n")
+
+			// Stream body (unless HEAD). Measure bytes copied for metrics/observer.
 			var copied int64
-			if req.Method != http.MethodHead {
+			if req.Method != http.MethodHead && resp.Body != nil {
 				n, _ := io.Copy(conn, resp.Body)
 				copied = n
 			}
+
+			// Close upstream response body now that we've forwarded it.
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+
 			if cfg.Metrics != nil {
 				cfg.Metrics.IncBypass()
 				cfg.Metrics.ObserveDuration("BYPASS", time.Since(start).Seconds())
@@ -290,7 +275,7 @@ func HandleHTTPOverConn(ctx context.Context, conn net.Conn, host string, cfg Con
 				Host:        originURL.Host,
 				Path:        originURL.Path,
 				Outcome:     "BYPASS",
-				IsTLS:       false,
+				IsTLS:       isTLS,
 				LatencySecs: time.Since(start).Seconds(),
 				Size:        copied,
 				Status:      resp.StatusCode,
@@ -302,10 +287,11 @@ func HandleHTTPOverConn(ctx context.Context, conn net.Conn, host string, cfg Con
 				Str("scheme", originURL.Scheme).
 				Str("outcome", "BYPASS").
 				Dur("latency", time.Since(start)).
-				Msg("streamed (conn bypass)")
+				Msg("streamed origin without caching")
 			return
 		}
 
+		// persist to cache then serve
 		if err := WriteFileAtomic(cacheFile, resp.Body); err != nil {
 			fmt.Fprintf(conn, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 13\r\nConnection: close\r\n\r\nServer Error")
 			NotifyObserver(cfg.RequestObserver, RequestRecord{
@@ -328,6 +314,8 @@ func HandleHTTPOverConn(ctx context.Context, conn net.Conn, host string, cfg Con
 			return
 		}
 		_ = cachepkg.WriteMeta(metaFile, newMeta)
+
+		// TODO Fix Restating here
 		fi2, _ := os.Stat(cacheFile)
 		outcome := "MISS"
 		sendCachedOnConn(conn, http.StatusOK, newMeta, outcome, req.Method == http.MethodHead, cacheFile, fi2)
@@ -346,7 +334,7 @@ func HandleHTTPOverConn(ctx context.Context, conn net.Conn, host string, cfg Con
 			Host:        originURL.Host,
 			Path:        originURL.Path,
 			Outcome:     outcome,
-			IsTLS:       false,
+			IsTLS:       isTLS,
 			LatencySecs: time.Since(start).Seconds(),
 			Size: func() int64 {
 				if fi2 != nil {
@@ -367,6 +355,7 @@ func HandleHTTPOverConn(ctx context.Context, conn net.Conn, host string, cfg Con
 			Msg("served")
 		return
 	default:
+		// non-200: try stale, else stream origin
 		if fi != nil {
 			sendCachedOnConn(conn, http.StatusOK, meta, "STALE", req.Method == http.MethodHead, cacheFile, fi)
 			if cfg.Metrics != nil {
@@ -380,7 +369,7 @@ func HandleHTTPOverConn(ctx context.Context, conn net.Conn, host string, cfg Con
 				Host:        originURL.Host,
 				Path:        originURL.Path,
 				Outcome:     "STALE",
-				IsTLS:       false,
+				IsTLS:       isTLS,
 				LatencySecs: time.Since(start).Seconds(),
 				Size: func() int64 {
 					if fi != nil {
@@ -397,9 +386,10 @@ func HandleHTTPOverConn(ctx context.Context, conn net.Conn, host string, cfg Con
 				Str("scheme", originURL.Scheme).
 				Str("outcome", "STALE").
 				Dur("latency", time.Since(start)).
-				Msg("served stale (conn non-200)")
+				Msg("served stale (non-200)")
 			return
 		}
+		// forward origin body
 		fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\n", resp.StatusCode, http.StatusText(resp.StatusCode))
 		for k, vv := range resp.Header {
 			for _, v := range vv {
@@ -422,7 +412,7 @@ func HandleHTTPOverConn(ctx context.Context, conn net.Conn, host string, cfg Con
 			Host:        originURL.Host,
 			Path:        originURL.Path,
 			Outcome:     "ORIGIN-" + strconv.Itoa(resp.StatusCode),
-			IsTLS:       false,
+			IsTLS:       isTLS,
 			LatencySecs: time.Since(start).Seconds(),
 			Size:        copied,
 			Status:      resp.StatusCode,
@@ -434,7 +424,6 @@ func HandleHTTPOverConn(ctx context.Context, conn net.Conn, host string, cfg Con
 			Str("scheme", originURL.Scheme).
 			Str("outcome", "ORIGIN-"+strconv.Itoa(resp.StatusCode)).
 			Dur("latency", time.Since(start)).
-			Msg("proxied origin response")
-		return
+			Msg("proxied origin")
 	}
 }

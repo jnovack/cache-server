@@ -81,6 +81,7 @@ func (s *Server) acceptLoop() {
 	for {
 		id := uuid.Must(uuid.NewV7())
 		ctx := context.WithValue(context.Background(), cacheproxy.ConnectionIDKey{}, id)
+		ctx = log.Logger.WithContext(ctx)
 		conn, err := s.ln.Accept()
 		if err != nil {
 			select {
@@ -205,10 +206,10 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	// Decide path by port.
 	switch port {
 	case 80:
-		cacheproxy.HandleHTTPOverConn(ctx, conn, host, s.CacheCfg)
+		cacheproxy.HandleHTTP(ctx, conn, host, s.CacheCfg)
 		return
 	case 443:
-		cacheproxy.HandleMITMHTTPS(ctx, conn, host, s.CacheCfg)
+		cacheproxy.HandleHTTPS(ctx, conn, host, s.CacheCfg)
 		return
 	default:
 		// Plain TCP tunnel; attempt to parse initial bytes as HTTP for capture
