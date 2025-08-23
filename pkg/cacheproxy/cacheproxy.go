@@ -2,6 +2,7 @@ package cacheproxy
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
 	cachepkg "github.com/jnovack/cache-server/pkg/cache"
@@ -24,12 +26,20 @@ var locks sync.Map // map[string]*sync.Mutex
 
 // HandleHTTPOverConn reads a single HTTP request from br (wrapping conn), processes
 // caching logic and writes back the HTTP response over conn. This is used by the socks code.
-func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
+func HandleHTTPOverConn(ctx context.Context, conn net.Conn, host string, cfg Config) {
+	reqID := uuid.Must(uuid.NewV7()) // request_id
+	ctx = context.WithValue(ctx, RequestIDKey{}, reqID)
+	log.Ctx(ctx).Debug().
+		Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+		Str("request_id", reqID.String()).
+		Msg("handling HTTP over connection")
 	start := time.Now()
 
 	if cfg.Metrics != nil {
 		cfg.Metrics.IncTotalRequests()
 	}
+
+	br := bufio.NewReader(conn)
 
 	// HTTP specific checks
 	req, err := http.ReadRequest(br)
@@ -37,7 +47,11 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 		if cfg.Metrics != nil {
 			cfg.Metrics.IncOriginErrors()
 		}
-		log.Debug().Err(err).Msg("failed to read HTTP request from connection")
+		log.Ctx(ctx).Debug().
+			Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+			Str("request_id", reqID.String()).
+			Err(err).
+			Msg("failed to read HTTP request from connection")
 		fmt.Fprintf(conn, "HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBad Request")
 		return
 	}
@@ -54,7 +68,12 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 			if cfg.Metrics != nil {
 				cfg.Metrics.IncOriginErrors()
 			}
-			log.Error().Err(err).Str("target", target).Msg("failed to dial origin for non-GET/HEAD")
+			log.Ctx(ctx).Error().
+				Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+				Str("request_id", reqID.String()).
+				Err(err).
+				Str("target", target).
+				Msg("failed to dial origin for non-GET/HEAD")
 			fmt.Fprintf(conn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBad Gateway")
 			return
 		}
@@ -105,7 +124,14 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 			Size:        fi.Size(),
 			Status:      http.StatusOK,
 		})
-		log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "HIT").Dur("latency", time.Since(start)).Str("scheme", originURL.Scheme).Msg("served")
+		log.Ctx(ctx).Info().
+			Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+			Str("request_id", reqID.String()).
+			Str("url", rawURL).
+			Str("scheme", originURL.Scheme).
+			Str("outcome", "HIT").
+			Dur("latency", time.Since(start)).
+			Msg("served")
 		return
 	}
 
@@ -139,7 +165,14 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 				}(),
 				Status: http.StatusOK,
 			})
-			log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale")
+			log.Ctx(ctx).Info().
+				Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+				Str("request_id", reqID.String()).
+				Str("url", rawURL).
+				Str("scheme", originURL.Scheme).
+				Str("outcome", "STALE").
+				Dur("latency", time.Since(start)).
+				Msg("served stale")
 			return
 		}
 		if cfg.Metrics != nil {
@@ -158,7 +191,13 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 			Size:        0,
 			Status:      http.StatusBadGateway,
 		})
-		log.Error().Err(err).Str("url", rawURL).Str("scheme", originURL.Scheme).Msg("origin fetch failed")
+		log.Ctx(ctx).Error().
+			Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+			Str("request_id", reqID.String()).
+			Err(err).
+			Str("url", rawURL).
+			Str("scheme", originURL.Scheme).
+			Msg("origin fetch failed")
 		return
 	}
 	defer resp.Body.Close()
@@ -191,7 +230,14 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 				Status:      http.StatusOK,
 				Conditional: true,
 			})
-			log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "REVALIDATED").Dur("latency", time.Since(start)).Msg("served")
+			log.Ctx(ctx).Info().
+				Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+				Str("request_id", reqID.String()).
+				Str("url", rawURL).
+				Str("scheme", originURL.Scheme).
+				Str("outcome", "REVALIDATED").
+				Dur("latency", time.Since(start)).
+				Msg("served")
 			return
 		}
 		if cfg.Metrics != nil {
@@ -210,7 +256,7 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 			Size:        0,
 			Status:      http.StatusInternalServerError,
 		})
-		// log.Warn().Str("url", rawURL).Str("scheme", originURL.Scheme).Dur("latency", time.Since(start)).Msg("not modified but no cached file")
+		// log.Ctx(ctx).Warn().Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).Str("url", rawURL).Str("scheme", originURL.Scheme).Dur("latency", time.Since(start)).Msg("not modified but no cached file")
 		return
 	case http.StatusOK:
 		newMeta := cachepkg.MetaFromHeaders(resp.Header, meta)
@@ -249,7 +295,14 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 				Size:        copied,
 				Status:      resp.StatusCode,
 			})
-			log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "BYPASS").Dur("latency", time.Since(start)).Msg("streamed (conn bypass)")
+			log.Ctx(ctx).Info().
+				Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+				Str("request_id", reqID.String()).
+				Str("url", rawURL).
+				Str("scheme", originURL.Scheme).
+				Str("outcome", "BYPASS").
+				Dur("latency", time.Since(start)).
+				Msg("streamed (conn bypass)")
 			return
 		}
 
@@ -267,7 +320,11 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 				Size:        0,
 				Status:      http.StatusInternalServerError,
 			})
-			log.Error().Err(err).Str("file", cacheFile).Msg("failed to write cache file")
+			log.Ctx(ctx).Error().Err(err).
+				Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+				Str("request_id", reqID.String()).
+				Str("file", cacheFile).
+				Msg("failed to write cache file")
 			return
 		}
 		_ = cachepkg.WriteMeta(metaFile, newMeta)
@@ -300,7 +357,14 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 			Status:      http.StatusOK,
 			Conditional: didCond,
 		})
-		log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", outcome).Dur("latency", time.Since(start)).Msg("served")
+		log.Ctx(ctx).Info().
+			Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+			Str("request_id", reqID.String()).
+			Str("url", rawURL).
+			Str("scheme", originURL.Scheme).
+			Str("outcome", outcome).
+			Dur("latency", time.Since(start)).
+			Msg("served")
 		return
 	default:
 		if fi != nil {
@@ -326,7 +390,14 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 				}(),
 				Status: http.StatusOK,
 			})
-			log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "STALE").Dur("latency", time.Since(start)).Msg("served stale (conn non-200)")
+			log.Ctx(ctx).Info().
+				Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+				Str("request_id", reqID.String()).
+				Str("url", rawURL).
+				Str("scheme", originURL.Scheme).
+				Str("outcome", "STALE").
+				Dur("latency", time.Since(start)).
+				Msg("served stale (conn non-200)")
 			return
 		}
 		fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\n", resp.StatusCode, http.StatusText(resp.StatusCode))
@@ -356,7 +427,14 @@ func HandleHTTPOverConn(conn net.Conn, br *bufio.Reader, cfg Config) {
 			Size:        copied,
 			Status:      resp.StatusCode,
 		})
-		log.Info().Str("url", rawURL).Str("scheme", originURL.Scheme).Str("outcome", "ORIGIN-"+strconv.Itoa(resp.StatusCode)).Dur("latency", time.Since(start)).Msg("proxied origin response")
+		log.Ctx(ctx).Info().
+			Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+			Str("request_id", reqID.String()).
+			Str("url", rawURL).
+			Str("scheme", originURL.Scheme).
+			Str("outcome", "ORIGIN-"+strconv.Itoa(resp.StatusCode)).
+			Dur("latency", time.Since(start)).
+			Msg("proxied origin response")
 		return
 	}
 }

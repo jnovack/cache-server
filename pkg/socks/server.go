@@ -197,10 +197,10 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	// Decide path by port.
 	switch port {
 	case 80:
-		cacheproxy.HandleHTTPOverConn(conn, br, s.CacheCfg)
+		cacheproxy.HandleHTTPOverConn(ctx, conn, host, s.CacheCfg)
 		return
 	case 443:
-		cacheproxy.HandleMITMHTTPS(conn, host, s.CacheCfg)
+		cacheproxy.HandleMITMHTTPS(ctx, conn, host, s.CacheCfg)
 		return
 	default:
 		// Plain TCP tunnel; attempt to parse initial bytes as HTTP for capture
