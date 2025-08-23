@@ -9,7 +9,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -144,44 +143,4 @@ func sendCachedOnConn(conn net.Conn, status int, meta cachepkg.Meta, outcome str
 	}
 	defer f.Close()
 	_, _ = io.Copy(conn, f)
-}
-
-// sendCachedResponse writes cached response to http.ResponseWriter.
-func sendCachedResponse(w http.ResponseWriter, status int, filePath string, meta cachepkg.Meta, outcome string, headOnly bool, fi os.FileInfo) {
-	if meta.ContentType != "" {
-		w.Header().Set("Content-Type", meta.ContentType)
-	}
-	if meta.ETag != "" {
-		w.Header().Set("ETag", meta.ETag)
-	}
-	if meta.LastModified != "" {
-		w.Header().Set("Last-Modified", meta.LastModified)
-	}
-	if meta.NoStore {
-		w.Header().Set("Cache-Control", "no-store")
-	} else if meta.NoCache {
-		w.Header().Set("Cache-Control", "no-cache")
-	} else if !meta.ExpiresAt.IsZero() {
-		secs := int(time.Until(meta.ExpiresAt).Seconds())
-		if secs < 0 {
-			secs = 0
-		}
-		w.Header().Set("Cache-Control", "max-age="+strconv.Itoa(secs))
-		w.Header().Set("Expires", meta.ExpiresAt.UTC().Format(http.TimeFormat))
-	}
-	w.Header().Set("X-Cache", outcome)
-	if fi != nil {
-		w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
-	}
-	w.WriteHeader(status)
-	if headOnly {
-		return
-	}
-	f, err := os.Open(filePath)
-	if err != nil {
-		log.Error().Err(err).Str("file", filePath).Msg("open cached file for serve failed")
-		return
-	}
-	defer f.Close()
-	_, _ = io.Copy(w, f)
 }
