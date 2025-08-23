@@ -64,6 +64,29 @@ func HandleMITMHTTPS(conn net.Conn, host string, cfg Config) {
 
 	br := bufio.NewReader(tlsSrv)
 
+	// Peek to check if there is any data after the TLS handshake
+	// This is important to avoid blocking indefinitely on ReadRequest if the
+	// client does not send any data.
+	peek, err := br.Peek(1)
+	if err != nil {
+		if err != io.EOF {
+			log.Ctx(ctx).Trace().
+				Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+				Str("request_id", reqID.String()).
+				Msg("error peeking post-TLS")
+		}
+		return // connection closed or peek failed — nothing to process
+	}
+
+	if len(peek) == 0 {
+		// No data yet — either wait briefly or return immediately
+		log.Ctx(ctx).Trace().
+			Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+			Str("request_id", reqID.String()).
+			Msg("no request data after TLS handshake")
+		return
+	}
+
 	// HTTP specific checks
 	req, err := http.ReadRequest(br)
 	if err != nil {
