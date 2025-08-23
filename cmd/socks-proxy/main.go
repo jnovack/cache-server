@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"net/http"
 	"path/filepath"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/jnovack/cache-server/pkg/logging"
 	"github.com/jnovack/cache-server/pkg/signals"
 	"github.com/jnovack/cache-server/pkg/socks"
+	"github.com/jnovack/flag"
 )
 
 var (
