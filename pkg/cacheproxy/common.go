@@ -63,7 +63,7 @@ func HandleCacheRequest(
 
 	// Serve fresh cache if present and fresh
 	if fi != nil && !meta.NoCache && cachepkg.IsFresh(meta) {
-		sendCachedOnConn(conn, http.StatusOK, meta, "HIT", req.Method == http.MethodHead, cacheFile, fi)
+		sendCachedOnConn(ctx, conn, http.StatusOK, meta, "HIT", req.Method == http.MethodHead, cacheFile, fi)
 		if cfg.Metrics != nil {
 			cfg.Metrics.IncHit()
 			cfg.Metrics.ObserveDuration("HIT", time.Since(start).Seconds())
@@ -99,7 +99,7 @@ func HandleCacheRequest(
 	if err != nil {
 		// attempt stale if exists
 		if fi != nil {
-			sendCachedOnConn(conn, http.StatusOK, meta, "STALE", req.Method == http.MethodHead, cacheFile, fi)
+			sendCachedOnConn(ctx, conn, http.StatusOK, meta, "STALE", req.Method == http.MethodHead, cacheFile, fi)
 			if cfg.Metrics != nil {
 				cfg.Metrics.IncStale()
 				cfg.Metrics.IncOriginErrors()
@@ -164,7 +164,7 @@ func HandleCacheRequest(
 		newMeta := cachepkg.MetaFromHeaders(resp.Header, meta)
 		_ = cachepkg.WriteMeta(metaFile, newMeta)
 		if fi != nil {
-			sendCachedOnConn(conn, http.StatusOK, newMeta, "REVALIDATED", req.Method == http.MethodHead, cacheFile, fi)
+			sendCachedOnConn(ctx, conn, http.StatusOK, newMeta, "REVALIDATED", req.Method == http.MethodHead, cacheFile, fi)
 			if cfg.Metrics != nil {
 				cfg.Metrics.IncRevalidated()
 				cfg.Metrics.ObserveDuration("REVALIDATED", time.Since(start).Seconds())
@@ -318,7 +318,7 @@ func HandleCacheRequest(
 		// TODO Fix Restating here
 		fi2, _ := os.Stat(cacheFile)
 		outcome := "MISS"
-		sendCachedOnConn(conn, http.StatusOK, newMeta, outcome, req.Method == http.MethodHead, cacheFile, fi2)
+		sendCachedOnConn(ctx, conn, http.StatusOK, newMeta, outcome, req.Method == http.MethodHead, cacheFile, fi2)
 		if cfg.Metrics != nil {
 			if outcome == "MISS" {
 				cfg.Metrics.IncMiss()
@@ -357,7 +357,7 @@ func HandleCacheRequest(
 	default:
 		// non-200: try stale, else stream origin
 		if fi != nil {
-			sendCachedOnConn(conn, http.StatusOK, meta, "STALE", req.Method == http.MethodHead, cacheFile, fi)
+			sendCachedOnConn(ctx, conn, http.StatusOK, meta, "STALE", req.Method == http.MethodHead, cacheFile, fi)
 			if cfg.Metrics != nil {
 				cfg.Metrics.IncStale()
 				cfg.Metrics.ObserveDuration("STALE", time.Since(start).Seconds())

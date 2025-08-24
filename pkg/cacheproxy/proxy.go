@@ -2,6 +2,7 @@
 package cacheproxy
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
 	cachepkg "github.com/jnovack/cache-server/pkg/cache"
@@ -107,8 +109,17 @@ func proxyCopy(a, b net.Conn) error {
 }
 
 // sendCachedOnConn writes an HTTP response over conn based on a cached file + meta.
-func sendCachedOnConn(conn net.Conn, status int, meta cachepkg.Meta, outcome string, headOnly bool, filePath string, fi os.FileInfo) {
-	log.Trace().Str("file", filePath).Int("status", status).Str("outcome", outcome).Bool("head_only", headOnly).Msg("sending cached response on conn")
+func sendCachedOnConn(ctx context.Context, conn net.Conn, status int, meta cachepkg.Meta, outcome string, headOnly bool, filePath string, fi os.FileInfo) {
+	log.Ctx(ctx).Trace().
+		Str("function", "sendCachedOnConn").
+		Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+		Str("request_id", ctx.Value(RequestIDKey{}).(uuid.UUID).String()).
+		Str("file", filePath).
+		Int("status", status).
+		Str("outcome", outcome).
+		Bool("head_only", headOnly).
+		Msg("sending cached response on conn")
+
 	fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\n", status, http.StatusText(status))
 	if meta.ContentType != "" {
 		fmt.Fprintf(conn, "Content-Type: %s\r\n", meta.ContentType)
@@ -141,7 +152,13 @@ func sendCachedOnConn(conn net.Conn, status int, meta cachepkg.Meta, outcome str
 	}
 	f, err := os.Open(filePath)
 	if err != nil {
-		log.Error().Err(err).Str("file", filePath).Msg("open cached file for serve failed (conn)")
+		log.Ctx(ctx).Error().
+			Str("function", "sendCachedOnConn").
+			Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+			Str("request_id", ctx.Value(RequestIDKey{}).(uuid.UUID).String()).
+			Err(err).
+			Str("file", filePath).
+			Msg("open cached file for serve failed (conn)")
 		return
 	}
 	defer f.Close()
