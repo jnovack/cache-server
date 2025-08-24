@@ -453,6 +453,9 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// fetchFromOrigin performs an GET to the given URL, adding conditional headers
+// from the provided cacheMeta if available. It returns the HTTP response, whether
+// a conditional request was made, and any error encountered.
 func fetchFromOrigin(url string, meta cacheMeta) (*http.Response, bool, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -471,7 +474,7 @@ func fetchFromOrigin(url string, meta cacheMeta) (*http.Response, bool, error) {
 		req.Header.Set("If-Modified-Since", meta.LastModified)
 		didCond = true
 	}
-	log.Debug().Str("url", url).Bool("conditional", didCond).Msg("fetching origin")
+	log.Debug().Str("url", url).Bool("conditional", didCond).Msg("fetching")
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, didCond, err
