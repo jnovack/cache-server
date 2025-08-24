@@ -18,10 +18,6 @@ import (
 func HandleHTTPS(ctx context.Context, conn net.Conn, host string, cfg Config) {
 	reqID := uuid.Must(uuid.NewV7()) // request_id
 	ctx = context.WithValue(ctx, RequestIDKey{}, reqID)
-	log.Ctx(ctx).Debug().
-		Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
-		Str("request_id", reqID.String()).
-		Msg("handling HTTP over connection")
 	defer func() { _ = conn.Close() }()
 
 	if cfg.Metrics != nil {
@@ -123,6 +119,10 @@ func HandleHTTPS(ctx context.Context, conn net.Conn, host string, cfg Config) {
 		return
 	}
 
+	log.Ctx(ctx).Debug().
+		Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+		Str("request_id", reqID.String()).
+		Msg("handling HTTPS")
 	// At this point we have a valid GET/HEAD request over TLS, so we can
 	// proceed to handle it via the common cache handling logic.
 	HandleCacheRequest(ctx, tlsSrv, req, cfg, true)

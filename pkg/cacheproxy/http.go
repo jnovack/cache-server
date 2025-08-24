@@ -21,11 +21,6 @@ var locks sync.Map // map[string]*sync.Mutex
 func HandleHTTP(ctx context.Context, conn net.Conn, host string, cfg Config) {
 	reqID := uuid.Must(uuid.NewV7()) // request_id
 	ctx = context.WithValue(ctx, RequestIDKey{}, reqID)
-	log.Ctx(ctx).Debug().
-		Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
-		Str("request_id", reqID.String()).
-		Msg("handling HTTP over connection")
-
 	if cfg.Metrics != nil {
 		cfg.Metrics.IncTotalRequests()
 	}
@@ -73,6 +68,11 @@ func HandleHTTP(ctx context.Context, conn net.Conn, host string, cfg Config) {
 		_ = proxyCopy(conn, server)
 		return
 	}
+
+	log.Ctx(ctx).Debug().
+		Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+		Str("request_id", reqID.String()).
+		Msg("handling HTTP")
 
 	// Use common caching logic
 	HandleCacheRequest(ctx, conn, req, cfg, false)
