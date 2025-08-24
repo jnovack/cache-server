@@ -67,7 +67,7 @@ func WriteFileAtomic(dst string, r io.Reader) error {
 
 // FetchOrigin GETs rawURL, using prev to set If-None-Match / If-Modified-Since when available.
 // Returns (resp, didConditional, err). Caller must close resp.
-func FetchOrigin(rawURL string, prev cachepkg.Meta, client *http.Client) (*http.Response, bool, error) {
+func FetchOrigin(ctx context.Context, rawURL string, prev cachepkg.Meta, client *http.Client) (*http.Response, bool, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
@@ -85,7 +85,12 @@ func FetchOrigin(rawURL string, prev cachepkg.Meta, client *http.Client) (*http.
 		req.Header.Set("If-Modified-Since", prev.LastModified)
 		didCond = true
 	}
-	log.Debug().Str("url", rawURL).Bool("conditional", didCond).Msg("fetching origin")
+	log.Ctx(ctx).Debug().
+		Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+		Str("request_id", ctx.Value(RequestIDKey{}).(uuid.UUID).String()).
+		Str("url", rawURL).
+		Bool("conditional", didCond).
+		Msg("fetching")
 	resp, err := client.Do(req)
 	return resp, didCond, err
 }
