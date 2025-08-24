@@ -293,7 +293,9 @@ func HandleCacheRequest(
 
 		// persist to cache then serve
 		if err := WriteFileAtomic(cacheFile, resp.Body); err != nil {
-			fmt.Fprintf(conn, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 13\r\nConnection: close\r\n\r\nServer Error")
+			if cfg.Metrics != nil {
+				cfg.Metrics.IncCacheErrors()
+			}
 			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
 				URL:         rawURL,

@@ -55,6 +55,7 @@ type Metrics interface {
 	IncNoCache()
 	IncStale()
 	IncOriginErrors()
+	IncCacheErrors()
 	ObserveDuration(string, float64)
 }
 
@@ -89,6 +90,7 @@ func NotifyObserver(obs RequestObserver, rec RequestRecord) {
 		defer func() {
 			// defensive recover in case observer panics
 			if err := recover(); err != nil {
+				// log but otherwise ignore
 				log.Error().
 					Interface("panic", err).
 					Str("record_url", r.URL).
