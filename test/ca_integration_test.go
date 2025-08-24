@@ -1,4 +1,5 @@
 //go:build integration
+// +build integration
 
 // Package test contains end-to-end integration tests for the cache-server
 // using the public package APIs (socks server + cacheproxy + ca).
@@ -51,6 +52,7 @@ func (nopMetrics) IncNoStore()                         {}
 func (nopMetrics) IncNoCache()                         {}
 func (nopMetrics) IncStale()                           {}
 func (nopMetrics) IncOriginErrors()                    {}
+func (nopMetrics) IncCacheErrors()                     {}
 func (nopMetrics) ObserveDuration(_ string, _ float64) {}
 
 // reservePort returns an available local TCP port by briefly listening and closing.
