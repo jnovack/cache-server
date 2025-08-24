@@ -85,8 +85,13 @@ func TestFetchOrigin(t *testing.T) {
 		w.Write([]byte("ok"))
 	}))
 	defer ts.Close()
+	ctx := context.WithValue(
+		context.WithValue(context.Background(),
+			ConnectionIDKey{}, uuid.New()),
+		RequestIDKey{}, uuid.New(),
+	)
 	meta := cachepkg.Meta{ETag: "etag", LastModified: "Mon, 02 Jan 2006 15:04:05 GMT"}
-	resp, didCond, err := FetchOrigin(ts.URL, meta, nil)
+	resp, didCond, err := FetchOrigin(ctx, ts.URL, meta, nil)
 	if err != nil || resp == nil {
 		t.Fatalf("FetchOrigin failed: %v", err)
 	}
