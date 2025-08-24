@@ -135,7 +135,7 @@ func HandleCacheRequest(
 		if cfg.Metrics != nil {
 			cfg.Metrics.IncOriginErrors()
 		}
-		fmt.Fprintf(conn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBad Gateway")
+		sendError(conn, http.StatusBadGateway)
 		NotifyObserver(cfg.RequestObserver, RequestRecord{
 			Time:        time.Now(),
 			URL:         rawURL,
@@ -197,10 +197,12 @@ func HandleCacheRequest(
 				Msg("served")
 			return
 		}
+		// no cached file to revalidate against
+		// this should be rare; treat as error
 		if cfg.Metrics != nil {
 			cfg.Metrics.IncOriginErrors()
 		}
-		fmt.Fprintf(conn, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 21\r\nConnection: close\r\n\r\nNot Modified without cache")
+		sendCustomError(conn, http.StatusInternalServerError, "Not Modified without cache")
 		NotifyObserver(cfg.RequestObserver, RequestRecord{
 			Time:        time.Now(),
 			URL:         rawURL,
@@ -213,7 +215,14 @@ func HandleCacheRequest(
 			Size:        0,
 			Status:      http.StatusInternalServerError,
 		})
-		// log.Ctx(ctx).Warn().Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).Str("url", rawURL).Str("scheme", originURL.Scheme).Dur("latency", time.Since(start)).Msg("not modified but no cached file")
+		log.Ctx(ctx).Warn().
+			Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+			Str("request_id", reqID.String()).
+			Str("url", rawURL).
+			Str("scheme", originURL.Scheme).
+			Str("outcome", "REVALIDATED_NO_CACHE").
+			Dur("latency", time.Since(start)).
+			Msg("not modified but no cached file")
 		return
 	case http.StatusOK:
 		newMeta := cachepkg.MetaFromHeaders(resp.Header, meta)
@@ -296,6 +305,7 @@ func HandleCacheRequest(
 			if cfg.Metrics != nil {
 				cfg.Metrics.IncCacheErrors()
 			}
+			sendCustomError(conn, http.StatusInternalServerError, "Server Error")
 			NotifyObserver(cfg.RequestObserver, RequestRecord{
 				Time:        time.Now(),
 				URL:         rawURL,
@@ -311,16 +321,18 @@ func HandleCacheRequest(
 			log.Ctx(ctx).Error().Err(err).
 				Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
 				Str("request_id", reqID.String()).
+				Str("url", rawURL).
+				Str("scheme", originURL.Scheme).
+				Str("outcome", "WRITE_ERROR").
+				Dur("latency", time.Since(start)).
 				Str("file", cacheFile).
 				Msg("failed to write cache file")
 			return
 		}
 		_ = cachepkg.WriteMeta(metaFile, newMeta)
 
-		// TODO Fix Restating here
-		fi2, _ := os.Stat(cacheFile)
 		outcome := "MISS"
-		sendCachedOnConn(ctx, conn, http.StatusOK, newMeta, outcome, req.Method == http.MethodHead, cacheFile, fi2)
+		sendCachedOnConn(ctx, conn, http.StatusOK, newMeta, outcome, req.Method == http.MethodHead, cacheFile, fi)
 		if cfg.Metrics != nil {
 			if outcome == "MISS" {
 				cfg.Metrics.IncMiss()
@@ -339,8 +351,8 @@ func HandleCacheRequest(
 			IsTLS:       isTLS,
 			LatencySecs: time.Since(start).Seconds(),
 			Size: func() int64 {
-				if fi2 != nil {
-					return fi2.Size()
+				if fi != nil {
+					return fi.Size()
 				}
 				return 0
 			}(),
