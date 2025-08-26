@@ -56,8 +56,6 @@ func HandleCacheRequest(
 	mtx.Lock()
 	defer mtx.Unlock()
 
-	//////////////////////////////////////////////////////////////
-
 	meta := cachepkg.ReadMeta(metaFile)
 	fi, _ := os.Stat(cacheFile)
 
