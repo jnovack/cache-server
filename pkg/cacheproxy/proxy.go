@@ -147,6 +147,13 @@ func sendCachedOnConn(ctx context.Context, conn net.Conn, status int, meta cache
 		fmt.Fprintf(conn, "Cache-Control: max-age=%d\r\n", secs)
 		fmt.Fprintf(conn, "Expires: %s\r\n", meta.ExpiresAt.UTC().Format(http.TimeFormat))
 	}
+
+	// Inject CORS into every proxied response
+	// TODO Flag?
+	fmt.Fprintf(conn, "Access-Control-Allow-Origin: *\r\n")
+	fmt.Fprintf(conn, "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
+	fmt.Fprintf(conn, "Access-Control-Allow-Headers: Content-Type, Authorization\r\n")
+
 	if fi != nil {
 		fmt.Fprintf(conn, "Content-Length: %d\r\n", fi.Size())
 	}
