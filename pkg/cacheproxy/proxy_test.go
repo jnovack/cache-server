@@ -60,6 +60,12 @@ func TestCachePathForOrigin(t *testing.T) {
 	if !strings.HasPrefix(file, cacheDir) || !strings.HasSuffix(meta, ".meta.json") {
 		t.Errorf("unexpected cache paths: %s, %s", file, meta)
 	}
+	if file != "/tmp/cache/example.com/foo/bar" {
+		t.Errorf("unexpected cache paths: %s, %s", file, meta)
+	}
+	if meta != "/tmp/cache/example.com/foo/.bar.meta.json" {
+		t.Errorf("unexpected cache paths: %s, %s", file, meta)
+	}
 }
 
 func TestWriteFileAtomic(t *testing.T) {
