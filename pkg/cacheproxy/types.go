@@ -65,6 +65,7 @@ type Config struct {
 	Private         bool // allow caching of Authorization / Cache-Control: private
 	Metrics         Metrics
 	RootCA          RootCAProvider
+	MinTTL          time.Duration
 	HTTPClient      *http.Client
 	RequestObserver RequestObserver
 }

@@ -26,6 +26,7 @@ var (
 	flagRootCert  = flag.String("root-cert", "", "root cert file")
 	flagRootKey   = flag.String("root-key", "", "root key file")
 	flagDN        = flag.String("dn", "", "generate root CA DN")
+	flagMinTTL    = flag.Duration("min-ttl", 1, "minimum cache TTL to enforce")
 	flagPrivate   = flag.Bool("private", false, "allow caching responses with Authorization or Cache-Control: private")
 )
 
@@ -61,6 +62,7 @@ func main() {
 		Private:  *flagPrivate,
 		Metrics:  metrics,
 		RootCA:   root,
+		MinTTL:   *flagMinTTL,
 	}
 
 	// Admin endpoints

@@ -159,7 +159,7 @@ func HandleCacheRequest(
 
 	switch resp.StatusCode {
 	case http.StatusNotModified:
-		newMeta := cachepkg.MetaFromHeaders(resp.Header, meta)
+		newMeta := cachepkg.MetaFromHeaders(resp.Header, meta, cfg.MinTTL)
 		_ = cachepkg.WriteMeta(metaFile, newMeta)
 		if fi != nil {
 			sendCachedOnConn(ctx, conn, http.StatusOK, newMeta, "REVALIDATED", req.Method == http.MethodHead, cacheFile, fi)
@@ -223,7 +223,7 @@ func HandleCacheRequest(
 			Msg("not modified but no cached file")
 		return
 	case http.StatusOK:
-		newMeta := cachepkg.MetaFromHeaders(resp.Header, meta)
+		newMeta := cachepkg.MetaFromHeaders(resp.Header, meta, cfg.MinTTL)
 
 		// BYPASS: origin response must be forwarded without caching. Write a well-formed
 		// HTTP response: status line -> headers -> CRLF -> body. Do not write any headers

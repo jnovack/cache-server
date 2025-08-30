@@ -55,7 +55,7 @@ func IsFresh(m Meta) bool {
 }
 
 // MetaFromHeaders builds Meta from HTTP headers, using previous meta as fallback for missing fields.
-func MetaFromHeaders(h http.Header, prev Meta) Meta {
+func MetaFromHeaders(h http.Header, prev Meta, minTTL time.Duration) Meta {
 	m := Meta{
 		ETag:         first(h, "ETag", prev.ETag),
 		LastModified: first(h, "Last-Modified", prev.LastModified),
@@ -74,7 +74,8 @@ func MetaFromHeaders(h http.Header, prev Meta) Meta {
 				m.NoCache = true
 			case strings.HasPrefix(p, "max-age="):
 				if secs, err := strconv.Atoi(strings.TrimPrefix(p, "max-age=")); err == nil {
-					m.ExpiresAt = m.FetchedAt.Add(time.Duration(secs) * time.Second)
+					maxAge := max(time.Duration(secs)*time.Second, minTTL)
+					m.ExpiresAt = m.FetchedAt.Add(maxAge)
 				}
 			}
 		}
@@ -82,7 +83,12 @@ func MetaFromHeaders(h http.Header, prev Meta) Meta {
 	if exp := h.Get("Expires"); exp != "" {
 		if t, err := http.ParseTime(exp); err == nil {
 			if m.ExpiresAt.IsZero() || t.After(m.ExpiresAt) {
-				m.ExpiresAt = t
+				// setting from expires header
+				later := t // t = expires header
+				if time.Now().Add(minTTL).After(t) {
+					later = time.Now().Add(minTTL)
+				}
+				m.ExpiresAt = later
 			}
 		}
 	}
