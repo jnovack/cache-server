@@ -34,8 +34,14 @@ func CachePathForOrigin(cacheDir string, originURL url.URL) (string, string) {
 	clean := path.Clean("/" + strings.TrimPrefix(originURL.Path, "/"))
 	rel := filepath.Join(filepath.FromSlash(originURL.Host), filepath.FromSlash(clean))
 	fp := filepath.Join(cacheDir, rel)
-	// log.Trace().Str("origin", originURL.String()).Str("file_path", fp).Str("function", "CachePathForOrigin").Msg("CachePathForOrigin()")
-	return fp, fp + ".meta.json"
+	log.Trace().Str("origin", originURL.String()).Str("file_path", fp).Str("function", "CachePathForOrigin").Msg("CachePathForOrigin()")
+	// return fp, fp + ".meta.json"
+
+	dir := filepath.Dir(fp)
+	base := filepath.Base(fp)
+	meta := filepath.Join(dir, "."+base+".meta.json")
+	// return meta filename with a period in front of it.
+	return fp, meta
 }
 
 // WriteFileAtomic writes contents from r into dst atomically.
