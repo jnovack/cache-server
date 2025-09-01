@@ -34,6 +34,10 @@ func main() {
 	flag.Parse()
 	logging.Setup(*flagLogLevel)
 
+	if *flagPrivate {
+		log.Warn().Msg("Caching all responses including no-cache, no-store, and Cache-Control: private")
+	}
+
 	metrics := admin.NewMetrics()
 
 	// Root CA: load or generate (fallback CN as requested earlier).
