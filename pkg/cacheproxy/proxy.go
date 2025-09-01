@@ -120,7 +120,7 @@ func proxyCopy(a, b net.Conn) error {
 }
 
 // sendCachedOnConn writes an HTTP response over conn based on a cached file + meta.
-func sendCachedOnConn(ctx context.Context, conn net.Conn, status int, meta cachepkg.Meta, outcome string, headOnly bool, filePath string, fi os.FileInfo) {
+func sendCachedOnConn(ctx context.Context, conn net.Conn, status int, meta cachepkg.Meta, outcome string, req http.Request, filePath string, fi os.FileInfo) {
 	log.Ctx(ctx).Trace().
 		Str("function", "sendCachedOnConn").
 		Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
@@ -128,8 +128,7 @@ func sendCachedOnConn(ctx context.Context, conn net.Conn, status int, meta cache
 		Str("file", filePath).
 		Int("status", status).
 		Str("outcome", outcome).
-		Bool("head_only", headOnly).
-		Msg("sending cached response on conn")
+		Msg("sending cached response")
 
 	fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\n", status, http.StatusText(status))
 	if meta.ContentType != "" {
@@ -156,18 +155,33 @@ func sendCachedOnConn(ctx context.Context, conn net.Conn, status int, meta cache
 
 	// Inject CORS into every proxied response
 	// TODO Flag?
-	fmt.Fprintf(conn, "Access-Control-Allow-Origin: *\r\n")
-	fmt.Fprintf(conn, "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
-	fmt.Fprintf(conn, "Access-Control-Allow-Headers: Content-Type, Authorization\r\n")
+	origin := req.Header.Get("Origin")
+	if origin != "" {
+		fmt.Fprintf(conn, "Access-Control-Allow-Origin", origin)
+		fmt.Fprintf(conn, "Vary", "Origin")
+	} else {
+		fmt.Fprintf(conn, "Access-Control-Allow-Origin: *\r\n")
+	}
+	fmt.Fprintf(conn, "Access-Control-Allow-Methods: GET, POST, HEAD, OPTIONS\r\n")
+	fmt.Fprintf(conn, "Access-Control-Allow-Credentials", "true")
+
+	if rh := req.Header.Get("Access-Control-Request-Headers"); rh != "" {
+		fmt.Fprintf(conn, "Access-Control-Allow-Headers: %s\r\n", rh)
+	} else {
+		fmt.Fprintf(conn, "Access-Control-Allow-Headers: Content-Type, Authorization\r\n")
+	}
 
 	if fi != nil {
 		fmt.Fprintf(conn, "Content-Length: %d\r\n", fi.Size())
 	}
 	fmt.Fprintf(conn, "X-Cache: %s\r\n", outcome)
 	fmt.Fprintf(conn, "Connection: close\r\n\r\n")
-	if headOnly {
+
+	// End response if head only
+	if req.Method == http.MethodHead {
 		return
 	}
+
 	f, err := os.Open(filePath)
 	if err != nil {
 		log.Ctx(ctx).Error().
