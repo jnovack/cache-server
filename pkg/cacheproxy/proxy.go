@@ -96,7 +96,8 @@ func FetchOrigin(ctx context.Context, rawURL string, prev cachepkg.Meta, client 
 		Str("request_id", ctx.Value(RequestIDKey{}).(uuid.UUID).String()).
 		Str("url", rawURL).
 		Bool("conditional", didCond).
-		Msg("fetching")
+		Str("function", "FetchOrigin").
+		Msg("FetchOrigin()")
 	resp, err := client.Do(req)
 	return resp, didCond, err
 }
