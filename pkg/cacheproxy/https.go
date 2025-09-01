@@ -108,14 +108,8 @@ func HandleHTTPS(ctx context.Context, conn net.Conn, host string, cfg Config) {
 	}
 	defer req.Body.Close()
 
-	// Only GET and HEAD are cacheable in MITM path.
-	if req.Method != http.MethodGet && req.Method != http.MethodHead {
-		log.Ctx(ctx).Debug().
-			Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
-			Str("request_id", reqID.String()).
-			Str("method", req.Method).
-			Msg("non-cacheable HTTPS method, denied in MITM mode")
-		sendError(tlsSrv, http.StatusMethodNotAllowed)
+	if req.Method == http.MethodOptions {
+		respondCORSPreflight(ctx, req, tlsSrv)
 		return
 	}
 

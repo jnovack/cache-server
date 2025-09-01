@@ -43,6 +43,11 @@ func HandleHTTP(ctx context.Context, conn net.Conn, host string, cfg Config) {
 	}
 	defer req.Body.Close()
 
+	if req.Method == http.MethodOptions {
+		respondCORSPreflight(ctx, req, conn)
+		return
+	}
+
 	// Only GET and HEAD are cacheable; others are proxied (simple tunnel)
 	if req.Method != http.MethodGet && req.Method != http.MethodHead {
 		target := req.Host

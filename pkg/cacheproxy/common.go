@@ -1,6 +1,8 @@
 package cacheproxy
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -18,6 +20,65 @@ import (
 
 	cachepkg "github.com/jnovack/cache-server/pkg/cache"
 )
+
+func respondCORSPreflight(ctx context.Context, req *http.Request, conn net.Conn) {
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "HTTP/1.1 204 No Content\r\n")
+
+	// Echo Origin or allow all
+	origin := req.Header.Get("Origin")
+	if origin != "" {
+		fmt.Fprintf(&buf, "Access-Control-Allow-Origin: %s\r\n", origin)
+	} else {
+		fmt.Fprintf(&buf, "Access-Control-Allow-Origin: *\r\n")
+	}
+	// Browsers often require this for credentialed requests
+	fmt.Fprintf(&buf, "Vary: Origin\r\n")
+	fmt.Fprintf(&buf, "Access-Control-Allow-Credentials: true\r\n")
+
+	// Allow requested method
+	if rm := req.Header.Get("Access-Control-Request-Method"); rm != "" {
+		fmt.Fprintf(&buf, "Access-Control-Allow-Methods: %s\r\n", rm)
+	} else {
+		fmt.Fprintf(&buf, "Access-Control-Allow-Methods: GET, HEAD, POST, OPTIONS\r\n")
+	}
+
+	// Allow requested headers
+	if rh := req.Header.Get("Access-Control-Request-Headers"); rh != "" {
+		fmt.Fprintf(&buf, "Access-Control-Allow-Headers: %s\r\n", rh)
+	} else {
+		fmt.Fprintf(&buf, "Access-Control-Allow-Headers: Content-Type, Authorization\r\n")
+	}
+
+	// Explicit Allow header for strict clients
+	fmt.Fprintf(&buf, "Allow: OPTIONS, GET, POST, HEAD\r\n")
+
+	// Normal headers
+	fmt.Fprintf(&buf, "Access-Control-Max-Age: 600\r\n")
+	fmt.Fprintf(&buf, "Content-Length: 0\r\n\r\n")
+
+	log.Ctx(ctx).Trace().
+		Str("method", req.Method).
+		Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+		Str("request_id", ctx.Value(RequestIDKey{}).(uuid.UUID).String()).
+		Str("origin", req.Header.Get("Origin")).
+		Str("acrm", req.Header.Get("Access-Control-Request-Method")).
+		Str("acrh", req.Header.Get("Access-Control-Request-Headers")).
+		Msg("CORS Preflight Request Headers")
+
+	log.Ctx(ctx).Trace().
+		Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+		Str("request_id", ctx.Value(RequestIDKey{}).(uuid.UUID).String()).
+		Str("response", buf.String()).
+		Msg("CORS Preflight Response")
+
+	if bw := bufio.NewWriter(conn); bw != nil {
+		_, _ = bw.Write(buf.Bytes())
+		_ = bw.Flush()
+	} else {
+		_, _ = conn.Write(buf.Bytes())
+	}
+}
 
 // HandleCacheRequest is the main entry for both HTTP and HTTPS cache logic.
 // It handles cache lookup, origin fetch, cache write, and response sending.
