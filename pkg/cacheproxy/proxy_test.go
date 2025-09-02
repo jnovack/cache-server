@@ -3,11 +3,13 @@ package cacheproxy
 import (
 	"bytes"
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +17,8 @@ import (
 
 	"github.com/google/uuid"
 	cachepkg "github.com/jnovack/cache-server/pkg/cache"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type dummyConn struct {
@@ -83,28 +87,129 @@ func TestWriteFileAtomic(t *testing.T) {
 	}
 }
 
+func newCtx() context.Context {
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, ConnectionIDKey{}, uuid.New())
+	ctx = context.WithValue(ctx, RequestIDKey{}, uuid.New())
+	return ctx
+}
+
 func TestFetchOrigin(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("ETag", "etag")
-		w.Header().Set("Last-Modified", "Mon, 02 Jan 2006 15:04:05 GMT")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
-	}))
-	defer ts.Close()
-	ctx := context.WithValue(
-		context.WithValue(context.Background(),
-			ConnectionIDKey{}, uuid.New()),
-		RequestIDKey{}, uuid.New(),
-	)
-	meta := cachepkg.Meta{ETag: "etag", LastModified: "Mon, 02 Jan 2006 15:04:05 GMT"}
-	resp, didCond, err := FetchOrigin(ctx, ts.URL, meta, nil)
-	if err != nil || resp == nil {
-		t.Fatalf("FetchOrigin failed: %v", err)
+	tests := []struct {
+		name         string
+		clientReq    *http.Request
+		prevMeta     cachepkg.Meta
+		isTLS        bool
+		wantScheme   string
+		wantCond     bool
+		wantHeaders  map[string]string
+		wantContains []string
+	}{
+		{
+			name: "basic GET without conditionals",
+			clientReq: func() *http.Request {
+				req, _ := http.NewRequest(http.MethodGet, "https://example.org/foo?bar=baz", nil)
+				req.Header.Set("Origin", "https://example.org")
+				req.Header.Set("Authorization", "Bearer 123")
+				req.Header.Set("Accept-Encoding", "deflate") // should be stripped
+				return req
+			}(),
+			prevMeta:   cachepkg.Meta{},
+			isTLS:      true,
+			wantScheme: "https",
+			wantCond:   false,
+			wantHeaders: map[string]string{
+				"Origin":        "https://example.org",
+				"Authorization": "Bearer 123",
+			},
+		},
+		{
+			name: "with conditional headers",
+			clientReq: func() *http.Request {
+				req, _ := http.NewRequest(http.MethodGet, "https://example.org/cond", nil)
+				return req
+			}(),
+			prevMeta: cachepkg.Meta{
+				ETag:         `"abc123"`,
+				LastModified: time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat),
+			},
+			isTLS:      true,
+			wantScheme: "https",
+			wantCond:   true,
+			wantHeaders: map[string]string{
+				"If-None-Match":     `"abc123"`,
+				"If-Modified-Since": "", // we’ll check Contains instead, since timestamp varies
+			},
+		},
+		{
+			name: "with cookies",
+			clientReq: func() *http.Request {
+				req, _ := http.NewRequest(http.MethodGet, "https://example.org/cookie", nil)
+				req.Header.Set("Cookie", "session=xyz; logged_in=true")
+				return req
+			}(),
+			prevMeta:   cachepkg.Meta{},
+			isTLS:      true,
+			wantScheme: "https",
+			wantCond:   false,
+			wantHeaders: map[string]string{
+				"Cookie": "session=xyz; logged_in=true",
+			},
+		},
 	}
-	if !didCond {
-		t.Error("FetchOrigin should set conditional headers if meta present")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capturedReq *http.Request
+
+			// Fake origin server that captures the request
+			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedReq = r
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"ok":true}`))
+			}))
+			defer origin.Close()
+
+			// Adjust host/URL so proxy will hit httptest.Server
+			u, _ := url.Parse(origin.URL)
+			tt.clientReq.Host = u.Host
+			tt.clientReq.URL.Host = u.Host
+			tt.clientReq.URL.Scheme = u.Scheme
+			tt.clientReq.URL.Path = path.Clean(tt.clientReq.URL.Path)
+
+			ctx := newCtx()
+			resp, didCond, err := FetchOrigin(ctx, tt.clientReq, tt.prevMeta, origin.Client(), tt.isTLS, &tt.prevMeta)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			// Response is from fake server
+			body, _ := io.ReadAll(resp.Body)
+			assert.Contains(t, string(body), `"ok":true`)
+
+			// DidCond matches expected
+			assert.Equal(t, tt.wantCond, didCond)
+
+			// Scheme correctness
+			if tt.wantScheme == "https" {
+				assert.True(t, strings.HasPrefix(resp.Request.URL.String(), "https://"))
+			} else {
+				assert.True(t, strings.HasPrefix(resp.Request.URL.String(), "http://"))
+			}
+
+			// Check headers that should be present
+			for k, v := range tt.wantHeaders {
+				if v == "" {
+					assert.NotEmpty(t, capturedReq.Header.Get(k), "expected header %s to be set", k)
+				} else {
+					assert.Equal(t, v, capturedReq.Header.Get(k), "header mismatch for %s", k)
+				}
+			}
+
+			// Ensure Accept-Encoding was stripped
+			assert.Empty(t, capturedReq.Header.Get("Accept-Encoding"))
+		})
 	}
-	resp.Body.Close()
 }
 
 func TestProxyCopy(t *testing.T) {

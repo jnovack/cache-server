@@ -71,35 +71,106 @@ func WriteFileAtomic(dst string, r io.Reader) error {
 	return nil
 }
 
-// FetchOrigin GETs rawURL, using prev to set If-None-Match / If-Modified-Since when available.
+// FetchOrigin forwards the client request to the origin server.
+// It clones all headers from the original client request, while adding
+// conditional caching headers (If-None-Match / If-Modified-Since).
+// It also extracts any Set-Cookie headers from the origin response into metaOut.SetCookies.
 // Returns (resp, didConditional, err). Caller must close resp.
-func FetchOrigin(ctx context.Context, rawURL string, prev cachepkg.Meta, client *http.Client) (*http.Response, bool, error) {
+func FetchOrigin(
+	ctx context.Context,
+	clientReq *http.Request,
+	prev cachepkg.Meta,
+	client *http.Client,
+	isTLS bool,
+	metaOut *cachepkg.Meta,
+) (*http.Response, bool, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+
+	uri := clientReq.URL.RequestURI()
+	if uri == "" {
+		uri = "/"
+	}
+
+	scheme := "http"
+	if isTLS {
+		scheme = "https"
+	}
+
+	parsed, _ := url.ParseRequestURI(uri)
+	pathPart := "/"
+	rawQuery := ""
+	if parsed != nil {
+		pathPart = path.Clean(parsed.Path)
+		rawQuery = parsed.RawQuery
+	}
+
+	originURL := &url.URL{
+		Scheme:   scheme,
+		Host:     clientReq.Host,
+		Path:     pathPart,
+		RawQuery: rawQuery,
+	}
+	rawURL := originURL.String()
+
+	// Create origin request with same method/body as client.
+	originReq, err := http.NewRequest(clientReq.Method, rawURL, clientReq.Body)
 	if err != nil {
 		return nil, false, err
 	}
-	req.Header.Set("User-Agent", "cache-server/1.0")
+
+	// Deep copy headers from client request.
+	originReq.Header = make(http.Header, len(clientReq.Header))
+	for k, vv := range clientReq.Header {
+		for _, v := range vv {
+			if !strings.EqualFold(k, "Accept-Encoding") {
+				originReq.Header.Add(k, v)
+			}
+		}
+	}
+
+	// Preserve Host explicitly (important for picky origins).
+	originReq.Host = clientReq.Host
+
+	// Set/override UA for the proxy (optional).
+	// originReq.Header.Set("User-Agent", "cache-server/1.0")
+
+	// Apply conditional headers if present.
 	didCond := false
 	if prev.ETag != "" {
-		req.Header.Set("If-None-Match", prev.ETag)
+		originReq.Header.Set("If-None-Match", prev.ETag)
 		didCond = true
 	}
 	if prev.LastModified != "" {
-		req.Header.Set("If-Modified-Since", prev.LastModified)
+		originReq.Header.Set("If-Modified-Since", prev.LastModified)
 		didCond = true
 	}
+
+	// Send to origin.
+	resp, err := client.Do(originReq)
+	if err != nil {
+		return nil, didCond, err
+	}
+
+	// Capture Set-Cookie from the origin (ephemeral; not cached on disk).
+	if metaOut != nil {
+		metaOut.SetCookies = metaOut.SetCookies[:0] // reset if reused
+		for _, sc := range resp.Header.Values("Set-Cookie") {
+			metaOut.SetCookies = append(metaOut.SetCookies, sc)
+		}
+	}
+
 	log.Ctx(ctx).Debug().
 		Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
 		Str("request_id", ctx.Value(RequestIDKey{}).(uuid.UUID).String()).
 		Str("url", rawURL).
 		Bool("conditional", didCond).
+		Int64("length", resp.ContentLength).
 		Str("function", "FetchOrigin").
 		Msg("FetchOrigin()")
-	resp, err := client.Do(req)
-	return resp, didCond, err
+
+	return resp, didCond, nil
 }
 
 // helper to copy bidirectionally.

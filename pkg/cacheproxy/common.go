@@ -155,7 +155,7 @@ func HandleCacheRequest(
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	resp, didCond, err := FetchOrigin(ctx, rawURL, meta, client)
+	resp, didCond, err := FetchOrigin(ctx, req, meta, client, isTLS, &meta)
 	if err != nil {
 		// attempt stale if exists
 		if fi != nil {
