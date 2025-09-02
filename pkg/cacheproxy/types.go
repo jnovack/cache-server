@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"net/http"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 // RequestRecord represents a captured request/result for in-memory inspection
@@ -22,6 +24,9 @@ type RequestRecord struct {
 	Status      int       `json:"status"`
 	Conditional bool      `json:"conditional"`
 }
+
+type ConnectionIDKey struct{}
+type RequestIDKey struct{}
 
 // RequestObserver receives RequestRecords. Observers should be fast — NotifyObserver
 // will invoke them asynchronously.
@@ -50,6 +55,7 @@ type Metrics interface {
 	IncNoCache()
 	IncStale()
 	IncOriginErrors()
+	IncCacheErrors()
 	ObserveDuration(string, float64)
 }
 
@@ -59,8 +65,20 @@ type Config struct {
 	Private         bool // allow caching of Authorization / Cache-Control: private
 	Metrics         Metrics
 	RootCA          RootCAProvider
+	MinTTL          time.Duration
 	HTTPClient      *http.Client
 	RequestObserver RequestObserver
+}
+
+// hopByHopHeaders lists HTTP/1.x hop-by-hop headers that must not be forwarded.
+var hopByHopHeaders = map[string]bool{
+	"connection":        true,
+	"proxy-connection":  true,
+	"keep-alive":        true,
+	"te":                true,
+	"trailer":           true,
+	"transfer-encoding": true,
+	"upgrade":           true,
 }
 
 // NotifyObserver invokes an observer asynchronously (defensive recover).
@@ -68,8 +86,20 @@ func NotifyObserver(obs RequestObserver, rec RequestRecord) {
 	if obs == nil {
 		return
 	}
-	go func() {
-		defer func() { _ = recover() }()
-		obs(rec)
-	}()
+	// copy to local var and call asynchronously to avoid blocking the request path.
+	go func(r RequestRecord) {
+		defer func() {
+			// defensive recover in case observer panics
+			if err := recover(); err != nil {
+				// log but otherwise ignore
+				log.Error().
+					Interface("panic", err).
+					Str("record_url", r.URL).
+					Str("record_method", r.Method).
+					Str("record_output", r.Outcome).
+					Msg("observer panicked")
+			}
+		}()
+		obs(r)
+	}(rec)
 }

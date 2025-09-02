@@ -77,6 +77,7 @@ func (m *Metrics) IncBypass()        { m.Lock(); m.Bypass++; m.Unlock() }
 func (m *Metrics) IncNoStore()       { m.Lock(); m.NoStore++; m.Unlock() }
 func (m *Metrics) IncNoCache()       { m.Lock(); m.NoCache++; m.Unlock() }
 func (m *Metrics) IncOriginErrors()  { m.Lock(); m.OriginErrors++; m.Unlock() }
+func (m *Metrics) IncCacheErrors()   { m.Lock(); m.OriginErrors++; m.Unlock() }
 
 // ObserveDuration records a request duration (in seconds) under a named outcome.
 func (m *Metrics) ObserveDuration(outcome string, seconds float64) {

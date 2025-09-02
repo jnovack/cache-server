@@ -3,6 +3,7 @@ package socks
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
 	"io"
 	"net"
@@ -12,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog/log"
-
+	"github.com/google/uuid"
 	"github.com/jnovack/cache-server/pkg/ca"
 	"github.com/jnovack/cache-server/pkg/cacheproxy"
+	"github.com/rs/zerolog/log"
 )
 
 // Server is a SOCKS5 server (no-auth) with HTTPS MITM support.
@@ -78,32 +79,43 @@ func (s *Server) Close() error {
 
 func (s *Server) acceptLoop() {
 	for {
+		id := uuid.Must(uuid.NewV7())
+		ctx := context.WithValue(context.Background(), cacheproxy.ConnectionIDKey{}, id)
+		ctx = log.Logger.WithContext(ctx)
 		conn, err := s.ln.Accept()
 		if err != nil {
 			select {
 			case <-s.done:
-				log.Debug().Err(err).Msg("listener closed, exiting accept loop")
+				log.Ctx(ctx).Debug().
+					Str("connection_id", ctx.Value(cacheproxy.ConnectionIDKey{}).(uuid.UUID).String()).
+					Err(err).Msg("listener closed, exiting accept loop")
 				return
 			default:
 			}
 			if strings.Contains(err.Error(), "use of closed network connection") || strings.Contains(err.Error(), "listener closed") {
-				log.Debug().Err(err).Msg("listener closed, exiting accept loop")
+				log.Ctx(ctx).Debug().
+					Str("connection_id", ctx.Value(cacheproxy.ConnectionIDKey{}).(uuid.UUID).String()).
+					Err(err).Msg("listener closed, exiting accept loop")
 				return
 			}
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				log.Warn().Err(err).Msg("temporary accept error, retrying")
+				log.Ctx(ctx).Warn().
+					Str("connection_id", ctx.Value(cacheproxy.ConnectionIDKey{}).(uuid.UUID).String()).
+					Err(err).Msg("temporary accept error, retrying")
 				time.Sleep(50 * time.Millisecond)
 				continue
 			}
-			log.Warn().Err(err).Msg("accept error")
+			log.Ctx(ctx).Warn().
+				Str("connection_id", ctx.Value(cacheproxy.ConnectionIDKey{}).(uuid.UUID).String()).
+				Err(err).Msg("accept error")
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
-		go s.handleConn(conn)
+		go s.handleConn(ctx, conn)
 	}
 }
 
-func (s *Server) handleConn(conn net.Conn) {
+func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(120 * time.Second))
 
@@ -194,10 +206,10 @@ func (s *Server) handleConn(conn net.Conn) {
 	// Decide path by port.
 	switch port {
 	case 80:
-		cacheproxy.HandleHTTPOverConn(conn, br, s.CacheCfg)
+		cacheproxy.HandleHTTP(ctx, conn, host, s.CacheCfg)
 		return
 	case 443:
-		cacheproxy.HandleMITMHTTPS(conn, host, s.CacheCfg)
+		cacheproxy.HandleHTTPS(ctx, conn, host, s.CacheCfg)
 		return
 	default:
 		// Plain TCP tunnel; attempt to parse initial bytes as HTTP for capture

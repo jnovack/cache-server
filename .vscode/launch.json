@@ -1,0 +1,67 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "All Integration Tests",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/test",
+            "buildFlags": "-tags=integration",
+            "args": [
+                "-test.v",
+            ],
+            "env": {
+                "DEBUG": "true"
+            }
+        },
+        {
+            "name": "CA Integration Test",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/test",
+            "buildFlags": "-tags=integration",
+            "args": [
+                "-test.v",
+                "-test.run",
+                "^TestMITM_.*$"
+            ],
+            "env": {
+                "DEBUG": "true"
+            }
+        },
+        {
+            "name": "End-to-End Integration Test",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/test",
+            "buildFlags": "-tags=integration",
+            "args": [
+                "-test.v",
+                "-test.run",
+                "^TestE2E_.*$"
+            ],
+            "env": {
+                "DEBUG": "true"
+            }
+        },
+        {
+            "name": "Proxy Integration Test",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/test/proxy_integration_test.go",
+            "buildFlags": "-tags=integration",
+            "args": [
+                "-test.v",
+                "-test.run",
+                "^TestProxy_.*$"
+            ],
+            "env": {
+                "DEBUG": "true"
+            }
+        },
+    ]
+}

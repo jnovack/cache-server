@@ -2,6 +2,7 @@ package cacheproxy
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"io"
 	"net"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/jnovack/cache-server/pkg/admin"
 	"github.com/jnovack/cache-server/pkg/ca"
@@ -21,7 +24,8 @@ func runMITMOnce(t *testing.T, cfg Config, hostPort, path string) (body, xcache 
 	t.Helper()
 
 	serverSide, clientSide := net.Pipe()
-	go HandleMITMHTTPS(serverSide, strings.Split(hostPort, ":")[0], cfg)
+	ctx := context.WithValue(context.Background(), ConnectionIDKey{}, uuid.Must(uuid.NewV7()))
+	go HandleHTTPS(ctx, serverSide, strings.Split(hostPort, ":")[0], cfg)
 
 	cli := tls.Client(clientSide, &tls.Config{InsecureSkipVerify: true})
 	if err := cli.Handshake(); err != nil {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"net/http"
 	"path/filepath"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/jnovack/cache-server/pkg/logging"
 	"github.com/jnovack/cache-server/pkg/signals"
 	"github.com/jnovack/cache-server/pkg/socks"
+	"github.com/jnovack/flag"
 )
 
 var (
@@ -26,12 +26,17 @@ var (
 	flagRootCert  = flag.String("root-cert", "", "root cert file")
 	flagRootKey   = flag.String("root-key", "", "root key file")
 	flagDN        = flag.String("dn", "", "generate root CA DN")
+	flagMinTTL    = flag.Duration("min-ttl", 1, "minimum cache TTL to enforce")
 	flagPrivate   = flag.Bool("private", false, "allow caching responses with Authorization or Cache-Control: private")
 )
 
 func main() {
 	flag.Parse()
 	logging.Setup(*flagLogLevel)
+
+	if *flagPrivate {
+		log.Warn().Msg("Caching all responses including no-cache, no-store, and Cache-Control: private")
+	}
 
 	metrics := admin.NewMetrics()
 
@@ -61,6 +66,7 @@ func main() {
 		Private:  *flagPrivate,
 		Metrics:  metrics,
 		RootCA:   root,
+		MinTTL:   *flagMinTTL,
 	}
 
 	// Admin endpoints
