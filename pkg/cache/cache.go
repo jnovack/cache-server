@@ -17,6 +17,7 @@ type Meta struct {
 	FetchedAt    time.Time `json:"fetched_at"`
 	NoStore      bool      `json:"no_store,omitempty"`
 	NoCache      bool      `json:"no_cache,omitempty"`
+	SetCookies   []string  `json:"-"` // ephemeral: Set-Cookie lines from live origin response (not cached)
 	ContentType  string    `json:"content_type,omitempty"`
 }
 
