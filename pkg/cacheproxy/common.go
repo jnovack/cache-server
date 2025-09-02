@@ -289,10 +289,60 @@ func HandleCacheRequest(
 	case http.StatusOK:
 		newMeta := cachepkg.MetaFromHeaders(resp.Header, meta, cfg.MinTTL)
 
+		// cfg.Private ALWAYS write the body to disk
+		if cfg.Private ||
+			!(newMeta.NoStore || newMeta.NoCache || req.Header.Get("Authorization") != "") {
+			bodyBytes, err := io.ReadAll(resp.Body)
+			if err != nil {
+				// handle error
+			}
+			_ = resp.Body.Close() // always close the original body
+
+			if err := WriteFileAtomic(cacheFile, bytes.NewReader(bodyBytes)); err != nil {
+				if cfg.Metrics != nil {
+					cfg.Metrics.IncCacheErrors()
+				}
+				NotifyObserver(cfg.RequestObserver, RequestRecord{
+					Time:        time.Now(),
+					URL:         rawURL,
+					Method:      req.Method,
+					Host:        originURL.Host,
+					Path:        originURL.Path,
+					Outcome:     "WRITE_ERROR",
+					IsTLS:       false,
+					LatencySecs: time.Since(start).Seconds(),
+					Size:        0,
+					Status:      http.StatusInternalServerError,
+				})
+				log.Ctx(ctx).Error().Err(err).
+					Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+					Str("request_id", reqID.String()).
+					Str("url", rawURL).
+					Str("scheme", originURL.Scheme).
+					Str("outcome", "WRITE_ERROR").
+					Dur("latency", time.Since(start)).
+					Str("file", cacheFile).
+					Msg("failed to write cache file")
+				return
+			}
+			_ = cachepkg.WriteMeta(metaFile, newMeta)
+			log.Ctx(ctx).Trace().
+				Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
+				Str("request_id", reqID.String()).
+				Str("url", rawURL).
+				Str("scheme", originURL.Scheme).
+				Str("file", cacheFile).
+				Int("size", len(bodyBytes)).
+				Msg("write cache file")
+
+			// Reset resp.Body so it can be read again
+			resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		}
+
 		// BYPASS: origin response must be forwarded without caching. Write a well-formed
 		// HTTP response: status line -> headers -> CRLF -> body. Do not write any headers
 		// before the status line (that was causing the malformed-status issues).
-		if newMeta.NoStore || (!cfg.Private && req.Header.Get("Authorization") != "") || (!cfg.Private && newMeta.NoCache) {
+		if newMeta.NoStore || newMeta.NoCache || req.Header.Get("Authorization") != "" {
 			if newMeta.NoStore && cfg.Metrics != nil {
 				cfg.Metrics.IncNoStore()
 			}
@@ -361,37 +411,6 @@ func HandleCacheRequest(
 				Msg("streamed origin without caching")
 			return
 		}
-
-		// persist to cache then serve
-		if err := WriteFileAtomic(cacheFile, resp.Body); err != nil {
-			if cfg.Metrics != nil {
-				cfg.Metrics.IncCacheErrors()
-			}
-			sendCustomError(conn, http.StatusInternalServerError, "Server Error")
-			NotifyObserver(cfg.RequestObserver, RequestRecord{
-				Time:        time.Now(),
-				URL:         rawURL,
-				Method:      req.Method,
-				Host:        originURL.Host,
-				Path:        originURL.Path,
-				Outcome:     "WRITE_ERROR",
-				IsTLS:       false,
-				LatencySecs: time.Since(start).Seconds(),
-				Size:        0,
-				Status:      http.StatusInternalServerError,
-			})
-			log.Ctx(ctx).Error().Err(err).
-				Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
-				Str("request_id", reqID.String()).
-				Str("url", rawURL).
-				Str("scheme", originURL.Scheme).
-				Str("outcome", "WRITE_ERROR").
-				Dur("latency", time.Since(start)).
-				Str("file", cacheFile).
-				Msg("failed to write cache file")
-			return
-		}
-		_ = cachepkg.WriteMeta(metaFile, newMeta)
 
 		outcome := "MISS"
 		sendCachedOnConn(ctx, conn, http.StatusOK, newMeta, outcome, *req, cacheFile)
