@@ -121,13 +121,6 @@ func proxyCopy(a, b net.Conn) error {
 }
 
 // sendCachedOnConn writes an HTTP response over conn based on a cached file + meta.
-func sendCachedOnConn(ctx context.Context, conn net.Conn, status int, meta cachepkg.Meta, outcome string, req http.Request, filePath string, fi os.FileInfo) {
-	log.Ctx(ctx).Trace().
-		Str("function", "sendCachedOnConn").
-		Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
-		Str("request_id", ctx.Value(RequestIDKey{}).(uuid.UUID).String()).
-
-// sendCachedOnConn writes an HTTP response over conn based on a cached file + meta.
 func sendCachedOnConn(
 	ctx context.Context,
 	conn net.Conn,

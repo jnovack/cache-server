@@ -27,14 +27,14 @@ func respondCORSPreflight(ctx context.Context, req *http.Request, conn net.Conn)
 
 	// Echo Origin or allow all
 	origin := req.Header.Get("Origin")
-	if origin != "" {
-		fmt.Fprintf(&buf, "Access-Control-Allow-Origin: %s\r\n", origin)
-	} else {
-		fmt.Fprintf(&buf, "Access-Control-Allow-Origin: *\r\n")
+	if origin == "" {
+		origin = "*"
 	}
+	fmt.Fprintf(&buf, "Access-Control-Allow-Origin: %s\r\n", origin)
+
 	// Browsers often require this for credentialed requests
-	fmt.Fprintf(&buf, "Vary: Origin\r\n")
-	fmt.Fprintf(&buf, "Access-Control-Allow-Credentials: true\r\n")
+	fmt.Fprint(&buf, "Vary: Origin\r\n")
+	fmt.Fprint(&buf, "Access-Control-Allow-Credentials: true\r\n")
 
 	// Allow requested method
 	if rm := req.Header.Get("Access-Control-Request-Method"); rm != "" {
@@ -51,11 +51,11 @@ func respondCORSPreflight(ctx context.Context, req *http.Request, conn net.Conn)
 	}
 
 	// Explicit Allow header for strict clients
-	fmt.Fprintf(&buf, "Allow: OPTIONS, GET, POST, HEAD\r\n")
+	fmt.Fprint(&buf, "Allow: OPTIONS, GET, POST, HEAD\r\n")
 
 	// Normal headers
-	fmt.Fprintf(&buf, "Access-Control-Max-Age: 600\r\n")
-	fmt.Fprintf(&buf, "Content-Length: 0\r\n\r\n")
+	fmt.Fprint(&buf, "Access-Control-Max-Age: 600\r\n")
+	fmt.Fprint(&buf, "Content-Length: 0\r\n\r\n")
 
 	log.Ctx(ctx).Trace().
 		Str("method", req.Method).
