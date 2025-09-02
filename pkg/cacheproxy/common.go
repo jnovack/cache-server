@@ -146,10 +146,11 @@ func HandleCacheRequest(
 			Str("scheme", originURL.Scheme).
 			Str("outcome", "HIT").
 			Dur("latency", time.Since(start)).
-			Msg("served")
+			Msg("served cache")
 		return
 	}
 
+	// Not available to serve from cache, fetch it.
 	client := cfg.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
@@ -219,6 +220,7 @@ func HandleCacheRequest(
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
+	// 304
 	case http.StatusNotModified:
 		newMeta := cachepkg.MetaFromHeaders(resp.Header, meta, cfg.MinTTL)
 		_ = cachepkg.WriteMeta(metaFile, newMeta)
@@ -253,7 +255,7 @@ func HandleCacheRequest(
 				Str("scheme", originURL.Scheme).
 				Str("outcome", "REVALIDATED").
 				Dur("latency", time.Since(start)).
-				Msg("served")
+				Msg("served cold")
 			return
 		}
 		// no cached file to revalidate against
@@ -283,6 +285,7 @@ func HandleCacheRequest(
 			Dur("latency", time.Since(start)).
 			Msg("not modified but no cached file")
 		return
+	// 200
 	case http.StatusOK:
 		newMeta := cachepkg.MetaFromHeaders(resp.Header, meta, cfg.MinTTL)
 
@@ -425,7 +428,7 @@ func HandleCacheRequest(
 			Str("scheme", originURL.Scheme).
 			Str("outcome", outcome).
 			Dur("latency", time.Since(start)).
-			Msg("served")
+			Msg("served fresh")
 		return
 	default:
 		// non-200: try stale, else stream origin
