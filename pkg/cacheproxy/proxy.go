@@ -126,11 +126,17 @@ func sendCachedOnConn(ctx context.Context, conn net.Conn, status int, meta cache
 		Str("function", "sendCachedOnConn").
 		Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
 		Str("request_id", ctx.Value(RequestIDKey{}).(uuid.UUID).String()).
-		Str("file", filePath).
-		Int("status", status).
-		Str("outcome", outcome).
-		Msg("sending cached response")
 
+// sendCachedOnConn writes an HTTP response over conn based on a cached file + meta.
+func sendCachedOnConn(
+	ctx context.Context,
+	conn net.Conn,
+	status int,
+	meta cachepkg.Meta,
+	outcome string,
+	req http.Request,
+	filePath string,
+) {
 	fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\n", status, http.StatusText(status))
 	if meta.ContentType != "" {
 		fmt.Fprintf(conn, "Content-Type: %s\r\n", meta.ContentType)
@@ -155,28 +161,36 @@ func sendCachedOnConn(ctx context.Context, conn net.Conn, status int, meta cache
 	}
 
 	// Inject CORS into every proxied response
-	// TODO Flag?
 	origin := req.Header.Get("Origin")
 	if origin != "" {
-		fmt.Fprintf(conn, "Access-Control-Allow-Origin", origin)
-		fmt.Fprintf(conn, "Vary", "Origin")
+		fmt.Fprintf(conn, "Access-Control-Allow-Origin: %s\r\n", origin)
+		fmt.Fprint(conn, "Vary: Origin\r\n")
 	} else {
-		fmt.Fprintf(conn, "Access-Control-Allow-Origin: *\r\n")
+		fmt.Fprint(conn, "Access-Control-Allow-Origin: *\r\n")
 	}
-	fmt.Fprintf(conn, "Access-Control-Allow-Methods: GET, POST, HEAD, OPTIONS\r\n")
-	fmt.Fprintf(conn, "Access-Control-Allow-Credentials", "true")
+	fmt.Fprint(conn, "Access-Control-Allow-Methods: GET, POST, HEAD, OPTIONS\r\n")
+	fmt.Fprint(conn, "Access-Control-Allow-Credentials: true\r\n")
 
 	if rh := req.Header.Get("Access-Control-Request-Headers"); rh != "" {
 		fmt.Fprintf(conn, "Access-Control-Allow-Headers: %s\r\n", rh)
 	} else {
-		fmt.Fprintf(conn, "Access-Control-Allow-Headers: Content-Type, Authorization\r\n")
+		fmt.Fprint(conn, "Access-Control-Allow-Headers: Content-Type, Authorization\r\n")
 	}
 
+	// Forward any Set-Cookie headers captured from a live origin response.
+	// (These are ephemeral: stored in meta only for this response; never written to cache.)
+	for _, setCookie := range meta.SetCookies {
+		fmt.Fprintf(conn, "Set-Cookie: %s\r\n", setCookie)
+	}
+
+	// File size for Content-Length
+	fi, _ := os.Stat(filePath)
 	if fi != nil {
 		fmt.Fprintf(conn, "Content-Length: %d\r\n", fi.Size())
 	}
+
 	fmt.Fprintf(conn, "X-Cache: %s\r\n", outcome)
-	fmt.Fprintf(conn, "Connection: close\r\n\r\n")
+	fmt.Fprint(conn, "Connection: close\r\n\r\n")
 
 	// End response if head only
 	if req.Method == http.MethodHead {
@@ -185,16 +199,24 @@ func sendCachedOnConn(ctx context.Context, conn net.Conn, status int, meta cache
 
 	f, err := os.Open(filePath)
 	if err != nil {
-		log.Ctx(ctx).Error().
+		log.Ctx(ctx).
+			Error().
 			Str("function", "sendCachedOnConn").
-			Str("connection_id", ctx.Value(ConnectionIDKey{}).(uuid.UUID).String()).
-			Str("request_id", ctx.Value(RequestIDKey{}).(uuid.UUID).String()).
-			Err(err).
 			Str("file", filePath).
-			Msg("open cached file for serve failed (conn)")
+			Err(err).
+			Msg("open cached file for serve failed")
 		return
 	}
 	defer f.Close()
+
+	log.Ctx(ctx).Trace().
+		Str("function", "sendCachedOnConn").
+		Str("file", filePath).
+		Int("status", status).
+		Str("outcome", outcome).
+		Int64("size", fi.Size()).
+		Msg("sending cached response")
+
 	_, _ = io.Copy(conn, f)
 }
 

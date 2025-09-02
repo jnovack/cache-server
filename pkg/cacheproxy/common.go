@@ -122,7 +122,7 @@ func HandleCacheRequest(
 
 	// Serve fresh cache if present and fresh
 	if fi != nil && !meta.NoCache && cachepkg.IsFresh(meta) {
-		sendCachedOnConn(ctx, conn, http.StatusOK, meta, "HIT", *req, cacheFile, fi)
+		sendCachedOnConn(ctx, conn, http.StatusOK, meta, "HIT", *req, cacheFile)
 		if cfg.Metrics != nil {
 			cfg.Metrics.IncHit()
 			cfg.Metrics.ObserveDuration("HIT", time.Since(start).Seconds())
@@ -159,7 +159,7 @@ func HandleCacheRequest(
 	if err != nil {
 		// attempt stale if exists
 		if fi != nil {
-			sendCachedOnConn(ctx, conn, http.StatusOK, meta, "STALE", *req, cacheFile, fi)
+			sendCachedOnConn(ctx, conn, http.StatusOK, meta, "STALE", *req, cacheFile)
 			if cfg.Metrics != nil {
 				cfg.Metrics.IncStale()
 				cfg.Metrics.IncOriginErrors()
@@ -225,7 +225,7 @@ func HandleCacheRequest(
 		newMeta := cachepkg.MetaFromHeaders(resp.Header, meta, cfg.MinTTL)
 		_ = cachepkg.WriteMeta(metaFile, newMeta)
 		if fi != nil {
-			sendCachedOnConn(ctx, conn, http.StatusOK, newMeta, "REVALIDATED", *req, cacheFile, fi)
+			sendCachedOnConn(ctx, conn, http.StatusOK, newMeta, "REVALIDATED", *req, cacheFile)
 			if cfg.Metrics != nil {
 				cfg.Metrics.IncRevalidated()
 				cfg.Metrics.ObserveDuration("REVALIDATED", time.Since(start).Seconds())
@@ -394,7 +394,7 @@ func HandleCacheRequest(
 		_ = cachepkg.WriteMeta(metaFile, newMeta)
 
 		outcome := "MISS"
-		sendCachedOnConn(ctx, conn, http.StatusOK, newMeta, outcome, *req, cacheFile, fi)
+		sendCachedOnConn(ctx, conn, http.StatusOK, newMeta, outcome, *req, cacheFile)
 		if cfg.Metrics != nil {
 			if outcome == "MISS" {
 				cfg.Metrics.IncMiss()
@@ -433,7 +433,7 @@ func HandleCacheRequest(
 	default:
 		// non-200: try stale, else stream origin
 		if fi != nil {
-			sendCachedOnConn(ctx, conn, http.StatusOK, meta, "STALE", *req, cacheFile, fi)
+			sendCachedOnConn(ctx, conn, http.StatusOK, meta, "STALE", *req, cacheFile)
 			if cfg.Metrics != nil {
 				cfg.Metrics.IncStale()
 				cfg.Metrics.ObserveDuration("STALE", time.Since(start).Seconds())
